@@ -176,4 +176,106 @@ describe('opencode_register', function()
     eq(false, out.ok)
     eq(true, out.error:find('refused') ~= nil, tostring(out.error))
   end)
+
+  -- We test `attach_opencode` against a stubbed-out opencode.state
+  -- module. Because attach_opencode calls `require('opencode.state')`
+  -- eagerly, we have to inject our stub into `package.loaded`
+  -- before setup runs.
+  it(
+    'attach_opencode wires up an EventManager subscription that fires opencode_register',
+    function()
+      local out = exec_lua(function()
+        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+          .. ';'
+          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+          .. ';'
+          .. package.path
+
+        -- Build a fake opencode.state whose `event_manager` field
+        -- is an EventManager-shaped object with `subscribe`.
+        local fake_em = {
+          _subs = {},
+          subscribe = function(self, event, cb) self._subs[event] = cb end,
+        }
+        package.loaded['opencode.state'] = { event_manager = fake_em }
+
+        local http = require('mcp.util.http_client')
+        http.post_json = function(url, body, _opts)
+          _G.__attach_captured = { url = url, body = body }
+          return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+        end
+
+        local mcp = require('mcp')
+        mcp.setup({})
+        mcp.attach_opencode({ name = 'my-nvim' })
+
+        -- Calling attach twice is idempotent.
+        mcp.attach_opencode({ name = 'my-nvim' })
+
+        -- Simulate the EventManager firing the server_ready event
+        -- by calling the registered callback directly. We do the
+        -- assertion outside the exec_lua sandbox because the chunk's
+        -- upvalues do not survive string.dump the way file-local
+        -- `eq` expects.
+        local cb = fake_em._subs['custom.server_ready']
+        if type(cb) ~= 'function' then
+          return { error = 'no callback registered for custom.server_ready' }
+        end
+        cb({ url = 'http://127.0.0.1:4096' })
+
+        return { captured = _G.__attach_captured }
+      end)
+
+      eq(nil, out.error, 'attach_opencode did not register the callback')
+      eq(
+        true,
+        out.captured.body:find('"name":"my%-nvim"') ~= nil,
+        'expected custom name: ' .. tostring(out.captured.body)
+      )
+      eq(true, out.captured.body:find('"type":"remote"') ~= nil)
+      eq(
+        true,
+        out.captured.url:find('http://127.0.0.1:4096/mcp$') ~= nil,
+        'expected POST to opencode /mcp, got: ' .. tostring(out.captured.url)
+      )
+    end
+  )
+
+  it('attach_opencode is a no-op when opencode.nvim is not installed', function()
+    local out = exec_lua(function()
+      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+        .. ';'
+        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+        .. ';'
+        .. package.path
+      package.loaded['opencode.state'] = nil
+      local mcp = require('mcp')
+      mcp.setup({})
+      local ok = pcall(mcp.attach_opencode)
+      return { ok = ok, attached = mcp._state.opencode_attached }
+    end)
+    eq(true, out.ok)
+    eq(false, out.attached)
+  end)
+
+  it(
+    'attach_opencode reports a warning when opencode.nvim is loaded but the EventManager is not ready',
+    function()
+      local out = exec_lua(function()
+        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+          .. ';'
+          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+          .. ';'
+          .. package.path
+        -- opencode.state without an event_manager field
+        package.loaded['opencode.state'] = {}
+        local mcp = require('mcp')
+        mcp.setup({})
+        local ok = pcall(mcp.attach_opencode)
+        return { ok = ok, attached = mcp._state.opencode_attached }
+      end)
+      eq(true, out.ok)
+      eq(false, out.attached)
+    end
+  )
 end)

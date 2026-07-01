@@ -96,6 +96,10 @@ function M.setup(opts)
   -- Apply instructions override.
   if opts.instructions then mcp_server.instructions = opts.instructions end
 
+  -- Reset attach state so re-running setup() does not silently
+  -- leave a stale opencode subscription attached to the old server.
+  M._state.opencode_attached = false
+
   -- Save state.
   M._state.setup_done = true
   M._state.opts = opts
@@ -154,6 +158,56 @@ function M.registry() return M._state.registry end
 --- Currently bound HTTP port, or nil if not running.
 ---@return integer?
 function M.http_port() return M._state.http_port end
+
+--- Subscribe to a running opencode.nvim instance and auto-register
+--- this mcp.nvim server with it whenever opencode is ready. This is
+--- the recommended way to pair mcp.nvim with opencode.nvim; the user
+--- does not have to write any autocmd themselves.
+---
+--- Looks up the opencode.nvim EventManager through the public state
+--- store (`require('opencode.state').event_manager`) and calls
+--- `:subscribe('custom.server_ready', ...)` on it. If opencode.nvim
+--- is not loaded, the function is a no-op (and prints a hint).
+---
+--- The function is idempotent: calling it more than once will not
+--- register the callback twice.
+---
+---@param opts? { name?: string }
+function M.attach_opencode(opts)
+  opts = opts or {}
+  if M._state.opencode_attached then return end
+  local ok, state = pcall(require, 'opencode.state')
+  if not ok then
+    vim.notify('[mcp] opencode.nvim is not installed; skipping attach', vim.log.levels.INFO)
+    return
+  end
+  local event_manager = state.event_manager
+  if not event_manager then
+    vim.notify(
+      '[mcp] opencode.nvim is loaded but its EventManager is not ready yet; retry after :Opencode',
+      vim.log.levels.WARN
+    )
+    return
+  end
+  event_manager:subscribe('custom.server_ready', function(data)
+    local result = M.opencode_register(data.url, { name = opts.name })
+    if result.ok then
+      vim.notify(
+        string.format('[mcp] Registered with opencode at %s', data.url),
+        vim.log.levels.INFO
+      )
+    else
+      vim.notify(
+        string.format(
+          '[mcp] Failed to register with opencode: %s',
+          result.error or ('status ' .. tostring(result.status))
+        ),
+        vim.log.levels.WARN
+      )
+    end
+  end)
+  M._state.opencode_attached = true
+end
 
 --- Public URL of the bound HTTP server, suitable for passing to an
 --- MCP client config. Returns `nil` when the server is not running.

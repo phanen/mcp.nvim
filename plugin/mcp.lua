@@ -50,7 +50,7 @@ vim.api.nvim_create_user_command('McpRegister', function(args)
   if not url then
     vim.notify(
       '[mcp] Usage: :McpRegister <opencode_url> [name]\n'
-        .. '       Or pair with opencode.nvim and call from the custom.server_ready event.',
+        .. '       Or pair with opencode.nvim and call require("mcp").attach_opencode() once.',
       vim.log.levels.ERROR
     )
     return
@@ -67,4 +67,17 @@ vim.api.nvim_create_user_command('McpRegister', function(args)
 end, {
   nargs = '?',
   desc = 'Register this mcp.nvim instance with a running opencode server',
+})
+
+vim.api.nvim_create_user_command('McpAttachOpencode', function(args)
+  -- Convenience: same as `require('mcp').attach_opencode({ name = ... })`.
+  -- Useful when the user wants to wire mcp.nvim + opencode.nvim
+  -- after both are already loaded (e.g. via :packadd) and prefers
+  -- the command over a function call.
+  local mcp = require('mcp')
+  local name = args.args and args.args:match('^%S+')
+  mcp.attach_opencode({ name = name })
+end, {
+  nargs = '?',
+  desc = 'Subscribe mcp.nvim to a running opencode.nvim instance',
 })

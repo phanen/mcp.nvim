@@ -109,41 +109,37 @@ claude mcp add --transport http nvim http://127.0.0.1:<port>/mcp
 ### Automatic registration with a running opencode
 
 Hard-coding the port in `opencode.json` is annoying because the
-port is OS-assigned at every Neovim start. mcp.nvim solves this
-with a runtime registration helper. Pair mcp.nvim with the
-[opencode.nvim](https://github.com/sudo-tee/opencode.nvim) plugin
-and add to your `init.lua`:
+port is OS-assigned at every Neovim start. mcp.nvim ships a
+helper that posts to opencode's runtime `mcp.add` API at runtime.
+To wire mcp.nvim up to a long-running opencode.nvim session, add
+to your `init.lua`:
 
 ```lua
-vim.api.nvim_create_autocmd('User', {
-  pattern = 'OpencodeEvent:custom.server_ready',
-  callback = function(args)
-    require('mcp').opencode_register(args.data.event.properties.url)
-  end,
-})
+require('mcp').setup({ ... })        -- start the in-process server
+require('mcp').attach_opencode()     -- subscribe to opencode.nvim
 ```
 
-mcp.nvim will POST `name = "nvim", config = { type = "remote", url = "<our URL>" }`
-to opencode's `POST /mcp` endpoint as soon as opencode is ready,
-and opencode will connect immediately. To do the same thing
-manually:
+`attach_opencode` reaches into the opencode.nvim state store
+through the public `require('opencode.state').event_manager`
+handle and registers a `custom.server_ready` subscriber. When
+opencode spawns its server, the subscriber fires and
+`mcp.opencode_register(url)` runs. The same call is also exposed
+as `:McpAttachOpencode [name]` and the older `:McpRegister [url]
+[name]` for users who want to drive the registration manually.
 
-```vim
-:McpRegister
-```
+Implementation notes:
 
-If `opencode.nvim` is loaded the command pulls the URL from
-`state.opencode_server` automatically; otherwise the opencode URL
-must be passed on the command line:
-
-```vim
-:McpRegister http://127.0.0.1:4096
-:McpRegister http://127.0.0.1:4096 my-nvim
-```
-
-See [the opencode HTTP API](https://github.com/sst/opencode/blob/dev/packages/opencode/src/server/routes/instance/httpapi/groups/mcp.ts)
-for the underlying contract (identifier `mcp.add`, payload
-`{ name, config }`, response `StatusMap`).
+- `opencode.nvim` exposes `vim.api.nvim_exec_autocmds('User',
+  { pattern = 'OpencodeEvent:' .. event_name, ... })` when its
+  EventManager emits a `custom.server_ready`. We catch the same
+  events through `EventManager:subscribe` so we do not depend on
+  the autocmd pattern being stable.
+- `attach_opencode` is idempotent. Repeated calls do not stack
+  subscribers.
+- If opencode.nvim is not installed `attach_opencode` is a no-op.
+- See [the opencode HTTP API](https://github.com/sst/opencode/blob/dev/packages/opencode/src/server/routes/instance/httpapi/groups/mcp.ts)
+  for the underlying wire contract (identifier `mcp.add`, payload
+  `{ name, config }`, response `StatusMap`).
 
 ## Commands
 
@@ -153,6 +149,7 @@ for the underlying contract (identifier `mcp.add`, payload
 | `:McpStop`      | Stop the HTTP server                         |
 | `:McpRestart`   | Restart the HTTP server (rebind)             |
 | `:McpPort`      | Print the current `http://host:port/mcp` URL |
+| `:McpAttachOpencode` | Subscribe mcp.nvim to a running opencode.nvim instance (manual equivalent of `mcp.attach_opencode()`) |
 | `:McpRegister`  | Register mcp.nvim with a running opencode server (URL optional if `opencode.nvim` is loaded) |
 | `:checkhealth mcp` | Check plugin health                       |
 
