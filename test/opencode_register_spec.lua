@@ -192,12 +192,22 @@ describe('opencode_register', function()
           .. package.path
 
         -- Build a fake opencode.state whose `event_manager` field
-        -- is an EventManager-shaped object with `subscribe`.
+        -- is an EventManager-shaped object with `subscribe`, and whose
+        -- `store` exposes a `subscribe` channel for current_cwd /
+        -- active_session updates.
         local fake_em = {
           _subs = {},
-          subscribe = function(self, event, cb) self._subs[event] = cb end,
         }
-        package.loaded['opencode.state'] = { event_manager = fake_em }
+        fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
+        local fake_store = {
+          _store_subs = {},
+        }
+        fake_store.subscribe = function(key, cb) fake_store._store_subs[key] = cb end
+        package.loaded['opencode.state'] = {
+          event_manager = fake_em,
+          store = fake_store,
+          current_cwd = '/home/phan/b/proj',
+        }
 
         local http = require('mcp.util.http_client')
         http.post_json = function(url, body, _opts)
@@ -223,7 +233,13 @@ describe('opencode_register', function()
         end
         cb({ url = 'http://127.0.0.1:4096' })
 
-        return { captured = _G.__attach_captured }
+        return {
+          captured = _G.__attach_captured,
+          -- Compute the expected encoded directory inside the
+          -- sandbox; vim.uri_encode is not available in the test
+          -- runner.
+          expected_dir = vim.uri_encode('/home/phan/b/proj', 'rfc3986'),
+        }
       end)
 
       eq(nil, out.error, 'attach_opencode did not register the callback')
@@ -235,11 +251,97 @@ describe('opencode_register', function()
       eq(true, out.captured.body:find('"type":"remote"') ~= nil)
       eq(
         true,
-        out.captured.url:find('http://127.0.0.1:4096/mcp$') ~= nil,
-        'expected POST to opencode /mcp, got: ' .. tostring(out.captured.url)
+        out.captured.url:find('http://127.0.0.1:4096/mcp%?directory=') ~= nil,
+        'expected POST to opencode /mcp with ?directory=..., got: ' .. tostring(out.captured.url)
+      )
+      eq(
+        true,
+        out.captured.url:find('directory=' .. out.expected_dir) ~= nil,
+        'expected directory query to be rfc3986-encoded, got: ' .. tostring(out.captured.url)
       )
     end
   )
+
+  it('attach_opencode re-registers when state.current_cwd changes', function()
+    local out = exec_lua(function()
+      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+        .. ';'
+        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+        .. ';'
+        .. package.path
+
+      local fake_em = {
+        _subs = {},
+      }
+      fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
+      local store_subs = {}
+      local fake_store = {
+        -- The production opencode.nvim state store is a plain module
+        -- table whose subscribe uses dot-call (no implicit self), so
+        -- we mirror that signature.
+        subscribe = function(key, cb) store_subs[key] = cb end,
+      }
+      package.loaded['opencode.state'] = {
+        event_manager = fake_em,
+        store = fake_store,
+        current_cwd = '/home/phan/b/projA',
+      }
+
+      local calls = {}
+      local http = require('mcp.util.http_client')
+      http.post_json = function(url, body, _opts)
+        table.insert(calls, { url = url, body = body })
+        return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+      end
+
+      local mcp = require('mcp')
+      mcp.setup({})
+      mcp.attach_opencode({ name = 'nvim' })
+
+      fake_em._subs['custom.server_ready']({ url = 'http://127.0.0.1:4096' })
+      -- Simulate opencode.nvim emitting on its state store. The
+      -- callback signature is cb(key, new_val, old_val); we ignore
+      -- the key/old_val args.
+      store_subs['current_cwd']('current_cwd', '/home/phan/b/projB', '/home/phan/b/projA')
+
+      -- And active_session changing to a session anchored elsewhere.
+      store_subs['active_session'](
+        'active_session',
+        { id = 's1', directory = '/home/phan/b/projC' },
+        nil
+      )
+
+      return {
+        calls = calls,
+        -- Compute the expected encoded directories inside the
+        -- sandbox; vim.uri_encode is not available in the test
+        -- runner.
+        enc_a = vim.uri_encode('/home/phan/b/projA', 'rfc3986'),
+        enc_b = vim.uri_encode('/home/phan/b/projB', 'rfc3986'),
+        enc_c = vim.uri_encode('/home/phan/b/projC', 'rfc3986'),
+      }
+    end)
+
+    eq(3, #out.calls)
+    -- First POST: triggered by custom.server_ready with cwd=projA.
+    eq(
+      true,
+      out.calls[1].url:find('directory=' .. out.enc_a) ~= nil,
+      'first POST should target projA, got: ' .. out.calls[1].url
+    )
+    -- Second: cwd changed to projB.
+    eq(
+      true,
+      out.calls[2].url:find('directory=' .. out.enc_b) ~= nil,
+      'second POST should target projB, got: ' .. out.calls[2].url
+    )
+    -- Third: active_session switched to a session in projC.
+    eq(
+      true,
+      out.calls[3].url:find('directory=' .. out.enc_c) ~= nil,
+      'third POST should target projC, got: ' .. out.calls[3].url
+    )
+  end)
 
   it('attach_opencode is a no-op when opencode.nvim is not installed', function()
     local out = exec_lua(function()

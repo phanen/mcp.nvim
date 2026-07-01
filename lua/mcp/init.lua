@@ -22,6 +22,7 @@ local M = {}
 ---@field name? string  mcp server name to register as (default `nvim`)
 ---@field timeout_ms? integer  HTTP request timeout (default 3000)
 ---@field headers? table<string, string>  extra headers (e.g. opencode auth tokens)
+---@field directory? string  workspace directory the registration is associated with (default `vim.fn.getcwd()`)
 
 ---@class mcp.State
 ---@field setup_done boolean
@@ -160,14 +161,19 @@ function M.registry() return M._state.registry end
 function M.http_port() return M._state.http_port end
 
 --- Subscribe to a running opencode.nvim instance and auto-register
---- this mcp.nvim server with it whenever opencode is ready. This is
---- the recommended way to pair mcp.nvim with opencode.nvim; the user
---- does not have to write any autocmd themselves.
+--- this mcp.nvim server with it whenever opencode is ready, and re-
+--- register whenever opencode.nvim's `current_cwd` or
+--- `active_session` changes so that the entry stays visible in
+--- `:Opencode mcp`. This is the recommended way to pair mcp.nvim
+--- with opencode.nvim; the user does not have to write any
+--- autocmd themselves.
 ---
---- Looks up the opencode.nvim EventManager through the public state
---- store (`require('opencode.state').event_manager`) and calls
---- `:subscribe('custom.server_ready', ...)` on it. If opencode.nvim
---- is not loaded, the function is a no-op (and prints a hint).
+--- opencode.nvim keys MCP state by workspace directory. The
+--- `:Opencode mcp` picker queries `GET /mcp?directory=<current_cwd>`,
+--- so we POST against the same directory. Rather than mirroring
+--- opencode.nvim's DirChanged autocmd, we subscribe directly to
+--- the opencode state store; that way we also catch new sessions
+--- opened in a different directory without an `:cd`.
 ---
 --- The function is idempotent: calling it more than once will not
 --- register the callback twice.
@@ -176,12 +182,12 @@ function M.http_port() return M._state.http_port end
 function M.attach_opencode(opts)
   opts = opts or {}
   if M._state.opencode_attached then return end
-  local ok, state = pcall(require, 'opencode.state')
+  local ok, oc_state = pcall(require, 'opencode.state')
   if not ok then
     vim.notify('[mcp] opencode.nvim is not installed; skipping attach', vim.log.levels.INFO)
     return
   end
-  local event_manager = state.event_manager
+  local event_manager = oc_state.event_manager
   if not event_manager then
     vim.notify(
       '[mcp] opencode.nvim is loaded but its EventManager is not ready yet; retry after :Opencode',
@@ -189,11 +195,35 @@ function M.attach_opencode(opts)
     )
     return
   end
+
+  -- The most recent opencode server URL we know about. Captured
+  -- from the custom.server_ready event so the state-subscriptions
+  -- below have something to POST against.
+  local last_server_url
+
+  ---@param directory string
+  local function re_register_for(directory)
+    if not last_server_url then return end
+    local result = M.opencode_register(last_server_url, { name = opts.name, directory = directory })
+    if not result.ok then
+      vim.notify(
+        string.format(
+          '[mcp] Failed to (re)register against %s: %s',
+          directory,
+          result.error or 'unknown'
+        ),
+        vim.log.levels.WARN
+      )
+    end
+  end
+
   event_manager:subscribe('custom.server_ready', function(data)
-    local result = M.opencode_register(data.url, { name = opts.name })
+    last_server_url = data.url
+    local directory = oc_state.current_cwd or vim.fn.getcwd()
+    local result = M.opencode_register(data.url, { name = opts.name, directory = directory })
     if result.ok then
       vim.notify(
-        string.format('[mcp] Registered with opencode at %s', data.url),
+        string.format('[mcp] Registered with opencode at %s (workspace: %s)', data.url, directory),
         vim.log.levels.INFO
       )
     else
@@ -206,6 +236,21 @@ function M.attach_opencode(opts)
       )
     end
   end)
+
+  -- Re-register when opencode.nvim's tracked cwd changes (e.g. the
+  -- user runs `:cd`, opens a new tab in a different folder, or
+  -- opencode.nvim updates its state from elsewhere).
+  oc_state.store.subscribe('current_cwd', function(_, new_val)
+    if type(new_val) == 'string' and new_val ~= '' then re_register_for(new_val) end
+  end)
+
+  -- Re-register when the active session swaps to one anchored in
+  -- a different directory.
+  oc_state.store.subscribe('active_session', function(_, new_val)
+    local dir = new_val and new_val.directory
+    if type(dir) == 'string' and dir ~= '' then re_register_for(dir) end
+  end)
+
   M._state.opencode_attached = true
 end
 
@@ -256,6 +301,14 @@ function M.opencode_register(opencode_url, opts)
     return { ok = false, error = 'mcp HTTP server is not running; call setup() first' }
   end
 
+  -- opencode servers key MCP registrations by workspace directory. The
+  -- picker in opencode.nvim always queries `GET /mcp?directory=<cwd>`,
+  -- so we have to POST with the same directory for the server to
+  -- show up in the user's current project. Without this param the
+  -- server gets associated with the opencode process's own CWD and
+  -- is invisible from any project buffer.
+  local directory = opts.directory or vim.fn.getcwd()
+
   local http = require('mcp.util.http_client')
   local body = vim.json.encode({
     name = name,
@@ -265,7 +318,12 @@ function M.opencode_register(opencode_url, opts)
     },
   })
 
-  local endpoint = (opencode_url:gsub('/$', '')) .. '/mcp'
+  -- Tiny URL encoder: use Neovim's built-in. The opencode server
+  -- only does an exact-match on this value, so over-encoding is
+  -- fine as long as the bytes match the path on disk.
+  local endpoint = (opencode_url:gsub('/$', ''))
+    .. '/mcp?directory='
+    .. vim.uri_encode(directory, 'rfc3986')
   local result, err = http.post_json(endpoint, body, {
     timeout_ms = opts.timeout_ms or 3000,
     headers = opts.headers or {},
