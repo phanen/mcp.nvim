@@ -85,45 +85,57 @@ describe('lsp tools', function()
   end)
 
   it('lsp_definition formats Location results as file:line:col lines', function()
-    local out = with_mock_lsp({
-      { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 11, character = 3 } } },
-    }, [[
+    local out = with_mock_lsp(
+      {
+        { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 11, character = 3 } } },
+      },
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       return registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
-    ]])
+    ]]
+    )
     eq(1, #out)
     eq('text', out[1].type)
     eq(true, out[1].text:find('lsp_test_fixture.txt:12:4') ~= nil, out[1].text)
   end)
 
   it('lsp_definition formats LocationLink results via targetUri/targetRange', function()
-    local out = with_mock_lsp({
-      { targetUri = 'file://lsp_test_fixture.txt', targetRange = { start = { line = 20, character = 5 } } },
-    }, [[
+    local out = with_mock_lsp(
+      {
+        {
+          targetUri = 'file://lsp_test_fixture.txt',
+          targetRange = { start = { line = 20, character = 5 } },
+        },
+      },
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       return registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
-    ]])
+    ]]
+    )
     eq(true, out[1].text:find('lsp_test_fixture.txt:21:6') ~= nil, out[1].text)
   end)
 
   it('lsp_references counts matches and includes the declaration by default', function()
-    local out = with_mock_lsp({
-      { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 0, character = 0 } } },
-      { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 9, character = 2 } } },
-    }, [[
+    local out = with_mock_lsp(
+      {
+        { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 0, character = 0 } } },
+        { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 9, character = 2 } } },
+      },
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       local res = registry:get('lsp_references').handler({
         path = 'lsp_test_fixture.txt', line = 5, character = 0,
       })
       return { text = res[1].text, captured = _G.__captured }
-    ]])
+    ]]
+    )
     eq(true, out.captured.context.includeDeclaration)
     eq(true, out.text:find('2 reference') ~= nil, out.text)
     eq(true, out.text:find('lsp_test_fixture.txt:1:1') ~= nil, out.text)
@@ -131,53 +143,72 @@ describe('lsp tools', function()
   end)
 
   it('lsp_references honours include_declaration=false', function()
-    local out = with_mock_lsp({}, [[
+    local out = with_mock_lsp(
+      {},
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       registry:get('lsp_references').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0, include_declaration = false,
       })
       return _G.__captured
-    ]])
+    ]]
+    )
     eq(false, out.context.includeDeclaration)
   end)
 
   it('lsp_hover joins multiple content blocks with blank lines', function()
-    local out = with_mock_lsp({
-      contents = { { value = 'function foo()' }, { language = 'lua', value = 'local foo' } },
-    }, [[
+    local out = with_mock_lsp(
+      {
+        contents = { { value = 'function foo()' }, { language = 'lua', value = 'local foo' } },
+      },
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       return registry:get('lsp_hover').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
-    ]])
+    ]]
+    )
     eq(true, out[1].text:find('function foo()') ~= nil)
     eq(true, out[1].text:find('local foo') ~= nil)
     eq(true, out[1].text:find('\n\n') ~= nil)
   end)
 
   it('lsp_document_symbols flattens SymbolInformation entries', function()
-    local out = with_mock_lsp({
-      { name = 'greet', kind = 12, location = { uri = 'file://lsp_test_fixture.txt', range = { start = { line = 2, character = 0 } } } },
-    }, [[
+    local out = with_mock_lsp(
+      {
+        {
+          name = 'greet',
+          kind = 12,
+          location = {
+            uri = 'file://lsp_test_fixture.txt',
+            range = { start = { line = 2, character = 0 } },
+          },
+        },
+      },
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       return registry:get('lsp_document_symbols').handler({
         path = 'lsp_test_fixture.txt',
       })
-    ]])
+    ]]
+    )
     eq(true, out[1].text:find('Function greet @') ~= nil, out[1].text)
   end)
 
   it('returns a clean no-result message when the LSP returns an empty list', function()
-    local out = with_mock_lsp({}, [[
+    local out = with_mock_lsp(
+      {},
+      [[
       local registry = require('mcp.tool_registry').new()
       require('mcp.tools.lsp').register_all(registry)
       return registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
-    ]])
+    ]]
+    )
     eq('No definition found.', out[1].text)
   end)
 

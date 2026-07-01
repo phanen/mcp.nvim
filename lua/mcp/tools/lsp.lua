@@ -21,9 +21,7 @@ local M = {}
 ---@param path string
 ---@return string
 local function path_to_uri(path)
-  if path:sub(1, 7) == 'file://' then
-    return path
-  end
+  if path:sub(1, 7) == 'file://' then return path end
   -- vim.uri_from_fname encodes the path; round-trip through
   -- vim.uri_to_fname via URI is fine in practice.
   return 'file://' .. (vim.uri_encode and vim.uri_encode(path) or path:gsub(' ', '%%20'))
@@ -34,13 +32,9 @@ end
 ---@param uri string
 ---@return string
 local function uri_to_path(uri)
-  if uri:sub(1, 7) ~= 'file://' then
-    return uri
-  end
+  if uri:sub(1, 7) ~= 'file://' then return uri end
   local ok, path = pcall(vim.uri_to_fname, uri)
-  if ok and path and path ~= '' then
-    return path
-  end
+  if ok and path and path ~= '' then return path end
   return uri:sub(8)
 end
 
@@ -61,10 +55,9 @@ local function format_location(loc)
   end
   -- Location: { uri, range }
   local uri = loc.uri or loc.documentUri
-  if not uri then
-    return tostring(loc)
-  end
-  local r = loc.range or { start = { line = 0, character = 0 }, ['end'] = { line = 0, character = 0 } }
+  if not uri then return tostring(loc) end
+  local r = loc.range
+    or { start = { line = 0, character = 0 }, ['end'] = { line = 0, character = 0 } }
   return string.format(
     '%s:%d:%d',
     uri_to_path(uri),
@@ -85,12 +78,17 @@ local function format_symbol(sym)
     kind_name = vim.lsp.protocol.SymbolKind[kind] or kind_name
   end
   local loc = sym.location or sym.range
-  if sym.range and not sym.location then
-    loc = { range = sym.range, uri = sym.uri }
-  end
+  if sym.range and not sym.location then loc = { range = sym.range, uri = sym.uri } end
   local pos = loc.range and loc.range.start or { line = 0, character = 0 }
   local path = loc.uri and uri_to_path(loc.uri) or '<unknown>'
-  return string.format('%s %s @ %s:%d:%d', kind_name, sym.name or '?', path, (pos.line or 0) + 1, (pos.character or 0) + 1)
+  return string.format(
+    '%s %s @ %s:%d:%d',
+    kind_name,
+    sym.name or '?',
+    path,
+    (pos.line or 0) + 1,
+    (pos.character or 0) + 1
+  )
 end
 
 --- Make sure the file at `path` is loaded into a buffer, so that an
@@ -101,9 +99,7 @@ end
 local function ensure_buffer(path)
   -- Absolutize so bufadd is not confused by relative paths.
   local abs = vim.fn.fnamemodify(path, ':p')
-  if not vim.uv.fs_stat(abs) then
-    error('File not found: ' .. abs)
-  end
+  if not vim.uv.fs_stat(abs) then error('File not found: ' .. abs) end
   local buf = vim.fn.bufadd(abs)
   vim.fn.bufload(buf)
   local uri = vim.uri_from_bufnr(buf) or path_to_uri(abs)
@@ -140,9 +136,7 @@ end
 
 --- Text content wrapper. Always returns the shape mcp.server expects
 --- from a tool handler.
-local function text(content)
-  return { { type = 'text', text = content } }
-end
+local function text(content) return { { type = 'text', text = content } } end
 
 ---@class mcp.tools.lsp.RegOpts
 ---@field timeout_ms? integer  default 2000
@@ -161,7 +155,10 @@ function M.register_all(registry, opts)
     inputSchema = {
       type = 'object',
       properties = {
-        path = { type = 'string', description = 'Absolute file path. Must be loaded into a buffer.' },
+        path = {
+          type = 'string',
+          description = 'Absolute file path. Must be loaded into a buffer.',
+        },
         line = { type = 'integer', minimum = 0, description = '0-indexed line.' },
         character = { type = 'integer', minimum = 0, description = '0-indexed character.' },
       },
@@ -173,9 +170,7 @@ function M.register_all(registry, opts)
         textDocument = { uri = uri },
         position = { line = args.line, character = args.character },
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local lines = {}
       for _, r in ipairs(results) do
         if type(r) == 'table' then
@@ -184,9 +179,7 @@ function M.register_all(registry, opts)
           end
         end
       end
-      if #lines == 0 then
-        return text('No definition found.')
-      end
+      if #lines == 0 then return text('No definition found.') end
       return text(table.concat(lines, '\n'))
     end,
   })
@@ -201,7 +194,11 @@ function M.register_all(registry, opts)
         path = { type = 'string', description = 'Absolute file path.' },
         line = { type = 'integer', minimum = 0 },
         character = { type = 'integer', minimum = 0 },
-        include_declaration = { type = 'boolean', description = 'Include the declaration site in results.', default = true },
+        include_declaration = {
+          type = 'boolean',
+          description = 'Include the declaration site in results.',
+          default = true,
+        },
       },
       required = { 'path', 'line', 'character' },
     },
@@ -212,9 +209,7 @@ function M.register_all(registry, opts)
         position = { line = args.line, character = args.character },
         context = { includeDeclaration = args.include_declaration ~= false },
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local count = 0
       for _, r in ipairs(results) do
         for _, _ in ipairs(r) do
@@ -250,9 +245,7 @@ function M.register_all(registry, opts)
         textDocument = { uri = uri },
         position = { line = args.line, character = args.character },
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local parts = {}
       for _, r in ipairs(results) do
         local contents = r.contents
@@ -274,9 +267,7 @@ function M.register_all(registry, opts)
           end
         end
       end
-      if #parts == 0 then
-        return text('No hover information available.')
-      end
+      if #parts == 0 then return text('No hover information available.') end
       return text(table.concat(parts, '\n\n'))
     end,
   })
@@ -289,7 +280,10 @@ function M.register_all(registry, opts)
       type = 'object',
       properties = {
         path = { type = 'string', description = 'Absolute file path.' },
-        depth = { type = 'integer', description = 'Optional. If set, only include symbols with this name-path depth or less. DocumentSymbol hierarchy is flattened.' },
+        depth = {
+          type = 'integer',
+          description = 'Optional. If set, only include symbols with this name-path depth or less. DocumentSymbol hierarchy is flattened.',
+        },
       },
       required = { 'path' },
     },
@@ -299,18 +293,14 @@ function M.register_all(registry, opts)
       local results, errors = buf_request_sync(buf, 'textDocument/documentSymbol', {
         textDocument = { uri = vim.uri_from_bufnr(buf) },
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local lines = {}
       for _, r in ipairs(results) do
         for _, sym in ipairs(r) do
           table.insert(lines, format_symbol(sym))
         end
       end
-      if #lines == 0 then
-        return text('No symbols found.')
-      end
+      if #lines == 0 then return text('No symbols found.') end
       return text(table.concat(lines, '\n'))
     end,
   })
@@ -334,18 +324,14 @@ function M.register_all(registry, opts)
       local results, errors = buf_request_sync(buf, 'workspace/symbol', {
         query = args.query,
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local lines = {}
       for _, r in ipairs(results) do
         for _, sym in ipairs(r) do
           table.insert(lines, format_symbol(sym))
         end
       end
-      if #lines == 0 then
-        return text('No matches.')
-      end
+      if #lines == 0 then return text('No matches.') end
       return text(table.concat(lines, '\n'))
     end,
   })
@@ -369,18 +355,14 @@ function M.register_all(registry, opts)
         textDocument = { uri = uri },
         position = { line = args.line, character = args.character },
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local lines = {}
       for _, r in ipairs(results) do
         for _, loc in ipairs(r) do
           table.insert(lines, format_location(loc))
         end
       end
-      if #lines == 0 then
-        return text('No implementations found.')
-      end
+      if #lines == 0 then return text('No implementations found.') end
       return text(table.concat(lines, '\n'))
     end,
   })
@@ -404,18 +386,14 @@ function M.register_all(registry, opts)
         textDocument = { uri = uri },
         position = { line = args.line, character = args.character },
       }, timeout)
-      if #errors > 0 and #results == 0 then
-        return nil, table.concat(errors, '; ')
-      end
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
       local lines = {}
       for _, r in ipairs(results) do
         for _, loc in ipairs(r) do
           table.insert(lines, format_location(loc))
         end
       end
-      if #lines == 0 then
-        return text('No type definition found.')
-      end
+      if #lines == 0 then return text('No type definition found.') end
       return text(table.concat(lines, '\n'))
     end,
   })
