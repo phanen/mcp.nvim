@@ -18,6 +18,11 @@ local M = {}
 ---@field server_info? table  override the SERVER_INFO used in `initialize` responses
 ---@field instructions? string  server instructions shown to clients
 
+---@class mcp.OpencodeRegisterOpts
+---@field name? string  mcp server name to register as (default `nvim`)
+---@field timeout_ms? integer  HTTP request timeout (default 3000)
+---@field headers? table<string, string>  extra headers (e.g. opencode auth tokens)
+
 ---@class mcp.State
 ---@field setup_done boolean
 ---@field opts mcp.Opts
@@ -149,5 +154,92 @@ function M.registry() return M._state.registry end
 --- Currently bound HTTP port, or nil if not running.
 ---@return integer?
 function M.http_port() return M._state.http_port end
+
+--- Public URL of the bound HTTP server, suitable for passing to an
+--- MCP client config. Returns `nil` when the server is not running.
+---@return string?
+function M.url()
+  local port = M._state.http_port
+  local host = M._state.opts.http and M._state.opts.http.host or '127.0.0.1'
+  local endpoint = M._state.opts.http and M._state.opts.http.endpoint or '/mcp'
+  if not port then return nil end
+  return string.format('http://%s:%d%s', host, port, endpoint)
+end
+
+--- Register this mcp.nvim instance with a running opencode server
+--- over opencode's HTTP API (the `mcp.add` endpoint at `POST /mcp`).
+---
+--- This is the standard way to wire mcp.nvim into a long-running
+--- opencode process whose URL is known only at runtime. The
+--- registration is fire-and-forget on opencode's side: once the
+--- POST succeeds, opencode connects to the URL we sent and starts
+--- pulling tools immediately.
+---
+--- Typical usage from `init.lua`:
+---
+--- ```lua
+--- vim.api.nvim_create_autocmd('User', {
+---   pattern = 'OpencodeEvent:custom.server_ready',
+---   callback = function(args)
+---     require('mcp').opencode_register(args.data.event.properties.url)
+---   end,
+--- })
+--- ```
+---
+--- Returns `(status_code, body)` on success or `(nil, err)` on
+--- transport failure. Status code 200 is success; 4xx indicates the
+--- opencode server rejected the configuration (e.g. unknown
+--- capabilities); 5xx indicates a server-side error.
+---
+---@param opencode_url string  base URL of the running opencode server (e.g. http://127.0.0.1:4096)
+---@param opts? mcp.OpencodeRegisterOpts
+---@return table  { ok, status?, body?, error? }
+function M.opencode_register(opencode_url, opts)
+  opts = opts or {}
+  local name = opts.name or 'nvim'
+  local our_url = M.url()
+  if not our_url then
+    return { ok = false, error = 'mcp HTTP server is not running; call setup() first' }
+  end
+
+  local http = require('mcp.util.http_client')
+  local body = vim.json.encode({
+    name = name,
+    config = {
+      type = 'remote',
+      url = our_url,
+    },
+  })
+
+  local endpoint = (opencode_url:gsub('/$', '')) .. '/mcp'
+  local result, err = http.post_json(endpoint, body, {
+    timeout_ms = opts.timeout_ms or 3000,
+    headers = opts.headers or {},
+  })
+
+  if err then return { ok = false, error = err } end
+
+  if result.status < 200 or result.status >= 300 then
+    return {
+      ok = false,
+      status = result.status,
+      error = ('opencode rejected the registration (HTTP %d): %s'):format(
+        result.status,
+        result.body
+      ),
+    }
+  end
+
+  local ok2, decoded = pcall(vim.json.decode, result.body)
+  if not ok2 then
+    return {
+      ok = true,
+      status = result.status,
+      body = result.body,
+      warning = 'response was not valid JSON',
+    }
+  end
+  return { ok = true, status = result.status, body = decoded }
+end
 
 return M
