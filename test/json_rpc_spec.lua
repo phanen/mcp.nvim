@@ -20,7 +20,11 @@ describe('json_rpc', function()
       -- nvim-test's busted runner does not propagate --lpath to the
       -- inner nvim --exec Lua chunks in a way we can rely on, so we
       -- explicitly prepend the plugin's lua/ tree to package.path.
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p') .. ';' .. package.path
+      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+        .. ';'
+        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+        .. ';'
+        .. package.path
     end)
   end)
 

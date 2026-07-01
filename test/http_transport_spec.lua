@@ -64,7 +64,13 @@ describe('http_transport', function()
   before_each(function()
     clear()
     exec_lua(
-      function() package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p') .. ';' .. package.path end
+      function()
+        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+          .. ';'
+          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+          .. ';'
+          .. package.path
+      end
     )
   end)
 

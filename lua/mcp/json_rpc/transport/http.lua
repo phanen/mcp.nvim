@@ -205,9 +205,14 @@ function HttpServer:_on_data(client, data)
 
   -- Notification or pure response (client -> server): accept, no body.
   if has_method and not has_id then
-    if self.on_request then
-      -- Notifications still get dispatched, but we do not produce a
-      -- response body (per JSON-RPC 2.0 spec).
+    -- Dispatch through on_notify when present; fall back to
+    -- on_request for handlers that do not distinguish. This split
+    -- matters for the lifecycle notification
+    -- `notifications/initialized` which must drive the server's
+    -- state machine forward, not be treated as a request.
+    if self.on_notify then
+      pcall(self.on_notify, msg.method, msg.params)
+    elseif self.on_request then
       pcall(self.on_request, msg.method, msg.params)
     end
     client:write(format_response(202, 'Accepted', ''))
@@ -235,26 +240,40 @@ function HttpServer:_on_data(client, data)
     return
   end
 
-  local ok2, result_or_err = pcall(self.on_request, msg.method, msg.params)
+  -- Capture multiple return values via the table-collect idiom.
+  -- `pcall` collapses multi-return into a single value; we want both
+  -- `result` and `err`, so wrap manually with xpcall.
+  local results = { nil, nil, nil }
+  local ok = xpcall(function()
+    -- Re-call on_request from inside xpcall to preserve multi-return.
+    local r1, r2 = self.on_request(msg.method, msg.params)
+    -- Stash results into the upvalues array. Index 1 is reserved by
+    -- xpcall for the error string, so use 2 and 3.
+    results[2] = r1
+    results[3] = r2
+  end, function(err) results[1] = err end)
   local response_body
-  if not ok2 then
-    -- on_request itself raised an exception: report as internal error.
+  if not ok then
     response_body = vim.json.encode({
       jsonrpc = '2.0',
       id = msg.id,
-      error = { code = -32603, message = tostring(result_or_err) },
+      error = { code = -32603, message = tostring(results[1]) },
     })
   else
-    local result, err = result_or_err, nil
-    -- The convention is `return result, err` but `pcall` collapses
-    -- that into a single return value. We instead expect on_request
-    -- to return a tuple when called normally; here we treat the
-    -- single return value as result.
-    response_body = vim.json.encode({
-      jsonrpc = '2.0',
-      id = msg.id,
-      result = result,
-    })
+    local result, err = results[2], results[3]
+    if err then
+      response_body = vim.json.encode({
+        jsonrpc = '2.0',
+        id = msg.id,
+        error = err,
+      })
+    else
+      response_body = vim.json.encode({
+        jsonrpc = '2.0',
+        id = msg.id,
+        result = result,
+      })
+    end
   end
   client:write(format_response(200, 'OK', response_body, {
     ['Content-Type'] = 'application/json',
@@ -293,6 +312,7 @@ function M.bind(host, port, opts)
     endpoint = opts.endpoint or '/mcp',
     allowed_origins = allowed,
     on_request = opts.on_request,
+    on_notify = opts.on_notify,
     clients = {},
   }, HttpServer)
 
