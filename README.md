@@ -106,6 +106,45 @@ For Claude Code:
 claude mcp add --transport http nvim http://127.0.0.1:<port>/mcp
 ```
 
+### Automatic registration with a running opencode
+
+Hard-coding the port in `opencode.json` is annoying because the
+port is OS-assigned at every Neovim start. mcp.nvim solves this
+with a runtime registration helper. Pair mcp.nvim with the
+[opencode.nvim](https://github.com/sudo-tee/opencode.nvim) plugin
+and add to your `init.lua`:
+
+```lua
+vim.api.nvim_create_autocmd('User', {
+  pattern = 'OpencodeEvent:custom.server_ready',
+  callback = function(args)
+    require('mcp').opencode_register(args.data.event.properties.url)
+  end,
+})
+```
+
+mcp.nvim will POST `name = "nvim", config = { type = "remote", url = "<our URL>" }`
+to opencode's `POST /mcp` endpoint as soon as opencode is ready,
+and opencode will connect immediately. To do the same thing
+manually:
+
+```vim
+:McpRegister
+```
+
+If `opencode.nvim` is loaded the command pulls the URL from
+`state.opencode_server` automatically; otherwise the opencode URL
+must be passed on the command line:
+
+```vim
+:McpRegister http://127.0.0.1:4096
+:McpRegister http://127.0.0.1:4096 my-nvim
+```
+
+See [the opencode HTTP API](https://github.com/sst/opencode/blob/dev/packages/opencode/src/server/routes/instance/httpapi/groups/mcp.ts)
+for the underlying contract (identifier `mcp.add`, payload
+`{ name, config }`, response `StatusMap`).
+
 ## Commands
 
 | Command         | Description                                  |
@@ -114,6 +153,7 @@ claude mcp add --transport http nvim http://127.0.0.1:<port>/mcp
 | `:McpStop`      | Stop the HTTP server                         |
 | `:McpRestart`   | Restart the HTTP server (rebind)             |
 | `:McpPort`      | Print the current `http://host:port/mcp` URL |
+| `:McpRegister`  | Register mcp.nvim with a running opencode server (URL optional if `opencode.nvim` is loaded) |
 | `:checkhealth mcp` | Check plugin health                       |
 
 ## Custom tools
