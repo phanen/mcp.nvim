@@ -6,7 +6,7 @@
 -- bytes. `encode` is the inverse: takes a complete JSON-RPC message
 -- string and produces the wire bytes.
 --
--- The two framing rules we support today:
+-- The three framing rules we support today:
 --
 --   * newline-delimited JSON: messages are separated by a single LF
 --     byte. Used by the MCP `stdio` transport (see
@@ -14,6 +14,11 @@
 --   * Content-Length: messages are framed with the LSP-style
 --     `Content-Length: N\r\n\r\n<json>` header. Used internally for
 --     tests and for compatibility with anyone who asks for it.
+--   * Server-Sent Events: messages are framed as
+--     `id: <id>\ndata: <json>\n\n` events, separated by blank lines.
+--     Used by the MCP Streamable HTTP transport when the server opens
+--     a `text/event-stream` response to GET (server-to-client push)
+--     and optionally to POST with JSON-RPC requests.
 --
 -- Decoders never throw. They return `nil` whenever the buffer is
 -- shorter than a complete message; they return the body and the number
@@ -117,6 +122,65 @@ end
 ---@return string
 function M.content_length_encode(msg)
   return string.format('Content-Length: %d\r\n\r\n%s', #msg, msg)
+end
+
+--- SSE encoder. Formats a single SSE event with the given `event_id`
+--- (optional) and `data` payload. The payload may span multiple lines;
+--- each line is prefixed with `data: ` per the SSE specification. The
+--- event is terminated with a blank line (`\n\n`).
+---
+--- Used by the HTTP transport when it writes JSON-RPC notifications
+--- to a `text/event-stream` response.
+---@param event_id integer|string|nil
+---@param data string
+---@return string
+function M.sse_encode(event_id, data)
+  local parts = {}
+  if event_id ~= nil then parts[#parts + 1] = 'id: ' .. tostring(event_id) end
+  -- Prefix every line of `data` with "data: ". SSE requires that each
+  -- line of multi-line data be its own "data:" field; we insert the
+  -- prefix after every newline and once at the start so single-line
+  -- payloads get the prefix exactly once.
+  local prefixed = tostring(data):gsub('\r?\n', '\ndata: ')
+  parts[#parts + 1] = 'data: ' .. prefixed
+  return table.concat(parts, '\n') .. '\n\n'
+end
+
+--- SSE decoder. Scans `strbuf` for the first complete SSE event
+--- (terminated by `\n\n` or `\r\n\r\n`). Returns the concatenated
+--- `data:` payload, or `''` for events without a data field
+--- (heartbeats / comments), plus the number of bytes consumed from
+--- the front of the buffer. Returns `nil` if no event terminator is
+--- yet present.
+---
+--- Comment lines (`:`-prefixed) and non-data fields (`event:`, `id:`,
+--- `retry:`) are tolerated but not surfaced: we only care about the
+--- JSON-RPC body, which by convention rides on `data:`. This matches
+--- how the MCP reference clients emit JSON-RPC over SSE.
+---@param strbuf string[]
+---@param byte_len integer
+---@return string? body
+---@return integer? consumed
+function M.sse_decode(strbuf, byte_len)
+  local s = table.concat(strbuf)
+  local term_start, term_end = s:find('\r\n\r\n', 1, true)
+  if not term_start then
+    term_start, term_end = s:find('\n\n', 1, true)
+  end
+  if not term_start then return nil end
+
+  local data_lines = {}
+  local body = s:sub(1, term_start - 1)
+  for line in body:gmatch('[^\r\n]+') do
+    -- Comment lines start with a colon; skip them.
+    if line:sub(1, 1) ~= ':' then
+      local prefix, value = line:match('^([%a]-):%s?(.*)$')
+      if prefix == 'data' then data_lines[#data_lines + 1] = value or '' end
+    end
+  end
+
+  local payload = table.concat(data_lines, '\n')
+  return payload, term_end
 end
 
 return M

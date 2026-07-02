@@ -246,6 +246,78 @@ describe('plugin', function()
     eq(true, out.port1 > 0 and out.port2 > 0)
   end)
 
+  it(
+    'GET /mcp through setup() opens an SSE stream and tool registration broadcasts to it',
+    function()
+      local out = exec_lua(function()
+        local mcp = require('mcp')
+        local uv = vim.uv or vim.loop
+
+        mcp.setup({
+          http = { enabled = true, allowed_origins = { 'null' } },
+          tools = {},
+        })
+        local port = mcp.http_port()
+
+        -- Open an SSE stream against the live plugin instance.
+        local client = uv.new_tcp()
+        local chunks = {}
+        client:connect('127.0.0.1', port, function(err)
+          if err then return end
+          client:read_start(function(_, data)
+            if data then table.insert(chunks, data) end
+          end)
+          client:write(
+            'GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n'
+              .. 'Accept: text/event-stream\r\nOrigin: null\r\n'
+              .. 'Connection: keep-alive\r\n\r\n'
+          )
+        end)
+
+        -- Wait for the GET response + heartbeat to land so we know
+        -- the server has registered the stream before we register a
+        -- tool.
+        vim.wait(
+          500,
+          function() return table.concat(chunks):find('text/event-stream', 1, true) ~= nil end
+        )
+
+        -- Register a fresh tool post-setup. The registry's
+        -- `notifications/tools/list_changed` notification should
+        -- ride the SSE stream we just opened.
+        mcp.registry():register({
+          name = 'late_added',
+          description = 'Registered after the SSE stream was open',
+          handler = function() return {} end,
+        })
+
+        -- Wait for the list_changed event to arrive on the SSE
+        -- stream. TCP may split it across reads, so check the
+        -- concatenation rather than individual chunks.
+        local function has_list_changed()
+          return table.concat(chunks):find('notifications/tools/list_changed', 1, true) ~= nil
+        end
+        -- Older Neovim releases have slower libuv under the test
+        -- runner; leave plenty of headroom.
+        local arrived = vim.wait(5000, has_list_changed)
+
+        local payload = table.concat(chunks)
+        client:close()
+        mcp.stop()
+
+        return {
+          got_sse_headers = payload:find('text/event-stream', 1, true) ~= nil,
+          got_list_changed = payload:find('notifications/tools/list_changed', 1, true) ~= nil,
+          wait_exit = arrived,
+        }
+      end)
+
+      eq(true, out.got_sse_headers, 'GET did not return text/event-stream')
+      eq(true, out.wait_exit, 'list_changed notification did not arrive within 2s')
+      eq(true, out.got_list_changed)
+    end
+  )
+
   it(':checkhealth mcp reports the number of registered tools', function()
     local ok = exec_lua(function()
       local mcp = require('mcp')

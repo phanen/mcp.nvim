@@ -5,26 +5,33 @@
 -- into a single JSON-RPC message dispatched synchronously to a user
 -- callback.
 --
--- Scope (v1):
+-- Scope:
 --   * POST /mcp: parse the JSON body, dispatch via `on_request`,
 --     respond with Content-Type: application/json. Notifications
 --     (no `id`) and pure responses get a 202 Accepted with no body.
---   * GET /mcp: 405 Method Not Allowed. We do not implement
---     server-to-client SSE streaming in v1.
+--   * GET /mcp: open a `text/event-stream` response that the server
+--     can push JSON-RPC notifications and requests down. The stream
+--     stays open until the client disconnects or the server is
+--     terminated. Per the MCP spec, this is how clients subscribe to
+--     server-initiated messages; refusing it (HTTP 405) breaks the
+--     handshake even if POST works fine.
 --   * DELETE /mcp: 204 No Content. We do not implement session
 --     teardown in v1.
 --   * Origin header: validated against the `allowed_origins` list
 --     when present. Requests with a missing Origin are allowed
 --     (CLI tools do not send one).
 --
--- Out of scope (deliberately deferred): SSE server-to-client streaming,
--- `Mcp-Session-Id` session management, `Last-Event-ID` resumability,
--- TLS. Use a reverse proxy if exposing outside localhost.
+-- Out of scope (deliberately deferred): `Mcp-Session-Id` session
+-- management, `Last-Event-ID` resumability, TLS, POST responses that
+-- upgrade to SSE (we keep the simpler JSON response for POST and use
+-- SSE only on GET). Use a reverse proxy if exposing outside localhost.
 --
 -- This transport does not compose with `mcp.json_rpc.wrap`. HTTP is a
 -- request-response protocol; the Connection abstraction assumes a
 -- stream of messages. Instead, callers pass an `on_request` callback
 -- at bind time and receive synchronous responses.
+
+local framing = require('mcp.json_rpc.transport.framing')
 
 local M = {}
 
@@ -80,6 +87,44 @@ local function format_response(status, reason, body, extra)
   return table.concat(parts)
 end
 
+--- One half of a persistent `text/event-stream` connection. The HTTP
+--- server owns a set of these; each one wraps the underlying TCP
+--- client plus a monotonically-increasing event id so the client can
+--- resume from `Last-Event-ID` if it reconnects (resumability itself
+--- is not implemented in v1, but the ids are emitted so the wire
+--- format is correct).
+---@class mcp.json_rpc.transport.http.SseStream
+---@field private client uv_tcp_t
+local SseStream = {}
+SseStream.__index = SseStream
+
+---@param client uv_tcp_t
+---@return mcp.json_rpc.transport.http.SseStream
+function SseStream.new(client) return setmetatable({ client = client }, SseStream) end
+
+---@return boolean
+function SseStream:is_open() return self.client ~= nil and not self.client:is_closing() end
+
+--- Write a fully-formatted SSE event (already including trailing
+--- blank line) to the underlying socket. Returns false if the
+--- socket is no longer writable so the caller can evict the stream.
+---@param payload string
+---@return boolean ok
+function SseStream:write(payload)
+  if not self:is_open() then return false end
+  local ok = pcall(function() self.client:write(payload) end)
+  if not ok then return false end
+  return true
+end
+
+--- Close the underlying TCP client. Idempotent.
+function SseStream:close()
+  if self.client and not self.client:is_closing() then
+    pcall(function() self.client:shutdown() end)
+    pcall(function() self.client:close() end)
+  end
+end
+
 ---@class mcp.json_rpc.transport.http.Server
 ---@field private handle uv_tcp_t
 ---@field private host string
@@ -87,16 +132,103 @@ end
 ---@field private endpoint string
 ---@field private allowed_origins table<string, true>
 ---@field on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
+---@field on_notify fun(method: string, params?: table)
 ---@field private clients table<userdata, true>
+---@field private streams table<mcp.json_rpc.transport.http.SseStream, true>
+---@field private event_seq integer
 local HttpServer = {}
 HttpServer.__index = HttpServer
 
+---@return boolean
+function HttpServer:is_closing() return self.handle:is_closing() end
+
 function HttpServer:terminate()
+  for stream, _ in pairs(self.streams) do
+    stream:close()
+    self.streams[stream] = nil
+  end
   for client, _ in pairs(self.clients) do
     if not client:is_closing() then client:close() end
+    self.clients[client] = nil
   end
-  self.clients = {}
   if not self.handle:is_closing() then self.handle:close() end
+end
+
+--- Open a `text/event-stream` response on `client` and register the
+--- resulting stream so that subsequent broadcasts reach it. Returns
+--- the stream on success or `nil` if the headers could not be written.
+---@param client uv_tcp_t
+---@return mcp.json_rpc.transport.http.SseStream?
+function HttpServer:_open_sse(client)
+  local response = format_response(200, 'OK', '', {
+    ['Content-Type'] = 'text/event-stream',
+    ['Cache-Control'] = 'no-cache',
+    ['Connection'] = 'keep-alive',
+    -- Disable proxy buffering in case the user puts nginx in front.
+    ['X-Accel-Buffering'] = 'no',
+  })
+  local ok = pcall(function() client:write(response) end)
+  if not ok then return nil end
+
+  -- A leading comment event flushes the response headers immediately
+  -- so the client knows the stream is live before we ever need to
+  -- send data. Some SSE clients buffer until the first real event.
+  pcall(function() client:write(': open\n\n') end)
+
+  -- Promote the client: it is now a long-lived SSE stream, not a
+  -- single request. Remove it from `self.clients` so the early
+  -- bail-out in `_on_data` filters out any stray bytes that the
+  -- server might still receive on the socket (SSE clients do not
+  -- send additional HTTP requests; if one does we drop the stream
+  -- via `_drop_client` rather than corrupting the protocol).
+  self.clients[client] = nil
+
+  local stream = SseStream.new(client)
+  self.streams[stream] = true
+  return stream
+end
+
+--- Push a JSON-RPC notification to every open SSE stream. Streams
+--- that fail to write are evicted so we do not retry on a dead
+--- socket.
+---@param method string
+---@param params? table
+function HttpServer:notify(method, params)
+  local payload = vim.json.encode({ jsonrpc = '2.0', method = method, params = params })
+  self:broadcast_event(payload)
+end
+
+--- Push an arbitrary JSON-RPC message to every open SSE stream.
+--- The payload must already be a JSON-encoded string.
+---@param payload string
+function HttpServer:broadcast_event(payload)
+  self.event_seq = (self.event_seq or 0) + 1
+  local frame = framing.sse_encode(self.event_seq, payload)
+  for stream, _ in pairs(self.streams) do
+    if stream:is_open() and stream:write(frame) then
+      -- ok
+    else
+      self.streams[stream] = nil
+    end
+  end
+end
+
+--- Drop a client from tracking. Called from the read callback on
+--- EOF / read error so that crashed peers do not leak. If the
+--- client is also wrapped in an SSE stream, that stream is removed
+--- too.
+---@param client uv_tcp_t
+function HttpServer:_drop_client(client)
+  if self.clients[client] then
+    self.clients[client] = nil
+    if not client:is_closing() then client:close() end
+  end
+  for stream, _ in pairs(self.streams) do
+    if stream.client == client then
+      self.streams[stream] = nil
+      stream:close()
+    end
+  end
 end
 
 function HttpServer:_on_data(client, data)
@@ -128,13 +260,12 @@ function HttpServer:_on_data(client, data)
   end
 
   if req.method == 'GET' then
-    -- We do not implement server-to-client SSE streaming in v1.
-    client:write(format_response(405, 'Method Not Allowed', '', {
-      Allow = 'POST, DELETE',
-    }))
-    client:shutdown()
-    client:close()
-    self.clients[client] = nil
+    -- The MCP Streamable HTTP transport expects GET to open a
+    -- server-to-client SSE stream. We write the response headers
+    -- and register the client as a stream; the read callback stays
+    -- subscribed so we notice when the client disconnects.
+    local stream = self:_open_sse(client)
+    if not stream then self:_drop_client(client) end
     return
   end
 
@@ -314,6 +445,8 @@ function M.bind(host, port, opts)
     on_request = opts.on_request,
     on_notify = opts.on_notify,
     clients = {},
+    streams = {},
+    event_seq = 0,
   }, HttpServer)
 
   handle:listen(
@@ -326,17 +459,11 @@ function M.bind(host, port, opts)
       self.clients[client] = true
       client:read_start(vim.schedule_wrap(function(read_err, data)
         if read_err then
-          if self.clients[client] then
-            self.clients[client] = nil
-            client:close()
-          end
+          self:_drop_client(client)
           return
         end
         if not data then
-          if self.clients[client] then
-            self.clients[client] = nil
-            client:close()
-          end
+          self:_drop_client(client)
           return
         end
         self:_on_data(client, data)

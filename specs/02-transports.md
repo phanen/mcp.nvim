@@ -157,13 +157,24 @@ connected streams.
 
 ### mcp.nvim notes
 
+- mcp.nvim v1 implements the Streamable HTTP transport fully enough
+  for tool-server use: `GET /mcp` opens a `text/event-stream` and
+  every server-initiated JSON-RPC notification (e.g.
+  `notifications/tools/list_changed`) is broadcast to all connected
+  streams with a monotonically-increasing `id` field. `POST /mcp`
+  returns the simpler `application/json` response; we do not yet
+  upgrade POST responses to SSE.
 - mcp.nvim binds to `127.0.0.1` by default. Setting `host = "0.0.0.0"` is
   allowed but emits a `:checkhealth` warning.
 - Origin header validation is enforced by default; `Origin: null` is
   rejected (DNS rebinding mitigation).
-- mcp.nvim v1 does not implement resumability (server-attached `id` on SSE
-  events + `Last-Event-ID` replay). The hook is in place (event IDs are
-  generated) but resumption is not yet wired. Documented as a gap.
+- mcp.nvim v1 does not implement resumability (`Last-Event-ID` replay
+  is not honoured by the GET stream). Event ids are emitted on the
+  wire so a future patch can plug in replay without breaking
+  wire-format compatibility.
+- Session management (`Mcp-Session-Id`) is not implemented. The
+  server does not assign a session id at `initialize` time, so
+  clients are not required to round-trip one.
 
 ## Custom Transports
 

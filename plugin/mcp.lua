@@ -60,9 +60,23 @@ vim.api.nvim_create_user_command('McpRegister', function(args)
   if not result.ok then
     vim.notify('[mcp] Registration failed: ' .. tostring(result.error), vim.log.levels.ERROR)
   elseif result.status and result.status >= 400 then
-    vim.notify(string.format('[mcp] opencode returned %d: %s', result.status, vim.inspect(result.body or result.error)), vim.log.levels.WARN)
+    vim.notify(
+      string.format(
+        '[mcp] opencode returned %d: %s',
+        result.status,
+        vim.inspect(result.body or result.error)
+      ),
+      vim.log.levels.WARN
+    )
   else
-    vim.notify(string.format('[mcp] Registered with opencode at %s (status %s)', url, tostring(result.status)), vim.log.levels.INFO)
+    vim.notify(
+      string.format(
+        '[mcp] Registered with opencode at %s (status %s)',
+        url,
+        tostring(result.status)
+      ),
+      vim.log.levels.INFO
+    )
   end
 end, {
   nargs = '?',

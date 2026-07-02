@@ -40,6 +40,14 @@ M._state = {
   http_port = nil,
 }
 
+-- The HTTP server the stub connection forwards notifications to.
+-- Set by `_start_http()` and cleared whenever the server is torn
+-- down (see `stop()` and the re-`setup()` path). When nil, the
+-- registry's `:notify` is a silent no-op — which is fine because
+-- nothing is connected yet to receive a stream event.
+---@type mcp.json_rpc.transport.http.Server?
+local http_broadcaster = nil
+
 --- Configure the plugin. Idempotent: calling setup() more than once
 --- replaces the configuration but does not leak the previous server.
 ---@param opts? mcp.Opts
@@ -48,11 +56,14 @@ function M.setup(opts)
   opts.http = opts.http or {}
 
   -- Tear down any previous HTTP server so repeated setup() calls
-  -- do not leak listening sockets.
+  -- do not leak listening sockets. Clearing `http_broadcaster` here
+  -- also drops any in-flight stub_conn notifications on the floor
+  -- rather than letting them touch a dead server.
   if M._state.http_server then
     M._state.http_server:terminate()
     M._state.http_server = nil
     M._state.http_port = nil
+    http_broadcaster = nil
   end
 
   -- Default the HTTP layer to enabled, on localhost, port 0
@@ -74,20 +85,35 @@ function M.setup(opts)
     registry:register(def)
   end
 
-  -- Construct a stub JSON-RPC Connection whose only job is to hold
-  -- the on_request handler closed over a Server instance. The
-  -- HTTP transport does not use the streaming Connection; it
-  -- dispatches directly to the on_request callback it was given
-  -- at bind time. We keep this stub because the registry's
-  -- list_changed notifications assume there is a Connection
-  -- present, even though we never call Connection.send from here.
+  -- Construct a stub JSON-RPC Connection. The HTTP transport does
+  -- not use this Connection for message delivery; it dispatches
+  -- directly to the on_request callback it was given at bind time.
+  --
+  -- The stub exists so that the registry has a Connection to call
+  -- `:notify(method, params)` on. That call forwards into the
+  -- streamable-HTTP server's SSE broadcaster, which serializes it
+  -- as a `text/event-stream` event to every connected client. Until
+  -- `_start_http()` runs the broadcaster is nil, so early-call
+  -- list_changed notifications are no-ops (and harmless — nothing
+  -- is connected yet to receive them).
+  --
+  -- The dispatcher methods (`on_request`, `on_notify`, `on_exit`,
+  -- `on_error`) are properties, not methods — the server stores
+  -- them directly. `is_closing` and `notify` are called via `:`
+  -- syntax by the registry, so they receive `self` as the first
+  -- argument and must accept it (even though the table shape is
+  -- fixed, the Lua method-call sugar is what wires it up).
   local stub_conn = {
     on_request = function() end,
     on_notify = function() end,
     on_exit = function() end,
     on_error = function() end,
-    is_closing = function() return false end,
-    notify = function() end,
+    is_closing = function(_self)
+      return http_broadcaster ~= nil and http_broadcaster:is_closing() or false
+    end,
+    notify = function(_self, method, params)
+      if http_broadcaster then http_broadcaster:notify(method, params) end
+    end,
   }
 
   -- Construct the MCP Server. The dispatcher is the bridge to the
@@ -131,6 +157,11 @@ function M._start_http()
   })
   M._state.http_server = server
   M._state.http_port = port
+  -- Make the registry's stub_conn.notify forward into the new
+  -- server's SSE broadcaster. After this point, list_changed and
+  -- any future server-initiated notifications ride every open SSE
+  -- stream.
+  http_broadcaster = server
   return port
 end
 
@@ -140,6 +171,7 @@ function M.stop()
     M._state.http_server:terminate()
     M._state.http_server = nil
     M._state.http_port = nil
+    http_broadcaster = nil
   end
 end
 
