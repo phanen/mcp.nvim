@@ -3,7 +3,7 @@
 ```lua
 {
   'phanen/mcp.nvim',
-  cmd = { 'McpStart', 'McpStop', 'McpRestart', 'McpPort', 'McpRegister', 'McpAttachOpencode' },
+  cmd = { 'McpStart', 'McpStop', 'McpRestart', 'McpPort', 'McpAttachOpencode' },
   config = function()
     require('mcp').setup({})
     require('mcp.tools.lsp').register_all(require('mcp').registry())
