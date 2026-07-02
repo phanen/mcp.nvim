@@ -55,9 +55,11 @@ describe('attach_opencode', function()
         }
 
         local http = require('mcp.util.http_client')
-        http.post_json = function(url, body, _opts)
+        http.post_json = function(url, body, _opts, on_done)
           _G.__captured = { url = url, body = body }
-          return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+          vim.schedule(
+            function() on_done({ status = 200, body = '{"nvim":{"status":"connected"}}' }, nil) end
+          )
         end
 
         local mcp = require('mcp')
@@ -128,9 +130,11 @@ describe('attach_opencode', function()
 
       local calls = {}
       local http = require('mcp.util.http_client')
-      http.post_json = function(url, body, _opts)
+      http.post_json = function(url, body, _opts, on_done)
         table.insert(calls, { url = url, body = body })
-        return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+        vim.schedule(
+          function() on_done({ status = 200, body = '{"nvim":{"status":"connected"}}' }, nil) end
+        )
       end
 
       local mcp = require('mcp')
@@ -268,8 +272,10 @@ describe('attach_opencode', function()
         }
 
         local http = require('mcp.util.http_client')
-        http.post_json = function(url, body, _opts)
-          return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+        http.post_json = function(url, body, _opts, on_done)
+          vim.schedule(
+            function() on_done({ status = 200, body = '{"nvim":{"status":"connected"}}' }, nil) end
+          )
         end
 
         local mcp = require('mcp')
@@ -331,9 +337,11 @@ describe('attach_opencode', function()
         store = store,
       }
       local http = require('mcp.util.http_client')
-      http.post_json = function(url, body, _opts)
+      http.post_json = function(url, body, _opts, on_done)
         table.insert(calls, { url = url, body = body })
-        return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+        vim.schedule(
+          function() on_done({ status = 200, body = '{"nvim":{"status":"connected"}}' }, nil) end
+        )
       end
 
       local mcp = require('mcp')
@@ -410,9 +418,11 @@ describe('attach_opencode', function()
         local calls = {}
         package.loaded['opencode.state'] = store_state
         local http = require('mcp.util.http_client')
-        http.post_json = function(url, body, _opts)
+        http.post_json = function(url, body, _opts, on_done)
           table.insert(calls, { url = url, body = body })
-          return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+          vim.schedule(
+            function() on_done({ status = 200, body = '{"nvim":{"status":"connected"}}' }, nil) end
+          )
         end
 
         local mcp = require('mcp')

@@ -141,6 +141,7 @@ end
 ---@field private allowed_origins table<string, true>
 ---@field on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
 ---@field on_notify fun(method: string, params?: table)
+---@field on_sse_closed? fun()  fires when the last SSE stream is dropped (used to reset session state)
 ---@field private clients table<userdata, true>
 ---@field private streams table<mcp.json_rpc.transport.http.SseStream, true>
 ---@field private event_seq integer
@@ -224,19 +225,24 @@ end
 --- Drop a client from tracking. Called from the read callback on
 --- EOF / read error so that crashed peers do not leak. If the
 --- client is also wrapped in an SSE stream, that stream is removed
---- too.
+--- too. If this drop leaves zero SSE streams alive, `on_sse_closed`
+--- fires so the MCP layer can reset its session state.
 ---@param client uv_tcp_t
 function HttpServer:_drop_client(client)
-  if self.clients[client] then
-    self.clients[client] = nil
-    if not client:is_closing() then client:close() end
-  end
+  local was_stream = false
   for stream, _ in pairs(self.streams) do
     if stream.client == client then
       self.streams[stream] = nil
       stream:close()
+      was_stream = true
+      break
     end
   end
+  if self.clients[client] then
+    self.clients[client] = nil
+    if not client:is_closing() then client:close() end
+  end
+  if was_stream and not next(self.streams) and self.on_sse_closed then self.on_sse_closed() end
 end
 
 function HttpServer:_on_data(client, data)
@@ -452,6 +458,7 @@ function M.bind(host, port, opts)
     allowed_origins = allowed,
     on_request = opts.on_request,
     on_notify = opts.on_notify,
+    on_sse_closed = opts.on_sse_closed,
     clients = {},
     streams = {},
     event_seq = 0,

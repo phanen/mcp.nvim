@@ -4,9 +4,8 @@
 -- shells out to `curl` via `vim.fn.jobstart`, so we mock the jobstart
 -- call and verify the curl argv layout. The real-curl integration is
 -- covered by manual `--listen`-and-`curl` round-trips (not in the
--- test suite, because `vim.fn.jobstart`'s `on_exit` does not fire
--- reliably under `--headless` in this environment, which makes the
--- full exit-code / stderr code path hard to assert reliably here).
+-- test suite, because the jobstart `on_exit` path is sensitive to
+-- event-loop timing under `--headless`).
 
 local n = require('nvim-test.helpers')
 
@@ -30,33 +29,29 @@ describe('http_client.post_json', function()
   it('builds the expected curl argv', function()
     local r = exec_lua(function()
       local commands = {}
-      vim.fn.jobstart = function(cmd, _opts)
+      vim.fn.jobstart = function(cmd, opts)
         for _, a in ipairs(cmd) do
           table.insert(commands, a)
         end
+        if opts and opts.on_exit then vim.schedule(function() opts.on_exit(nil, 0) end) end
         return 1
       end
       local http = require('mcp.util.http_client')
       http.post_json(
         'http://127.0.0.1:4096/mcp?directory=x',
         '{"name":"nvim"}',
-        { timeout_ms = 2000 }
+        { timeout_ms = 2000 },
+        function() end
       )
+      vim.wait(50, function() return true end)
       return { commands = commands }
     end)
 
-    -- argv[1] is the binary name; argv[2] is its first flag.
     eq('curl', r.commands[1])
     eq('-sS', r.commands[2])
-    -- URL is the last positional argument.
     eq('http://127.0.0.1:4096/mcp?directory=x', r.commands[#r.commands])
-    -- The "write out the status code after the body" sentinel
-    -- (`-w '\n%{http_code}'`) sits right before the URL.
     eq('\n%{http_code}', r.commands[#r.commands - 1])
-    -- The body sits two slots before the URL (we insert `-w` and its
-    -- sentinel argument between them).
     eq('{"name":"nvim"}', r.commands[#r.commands - 3])
-    -- `-X POST` is somewhere in the middle; just check it's there.
     local found_post = false
     for i, a in ipairs(r.commands) do
       if a == '-X' and r.commands[i + 1] == 'POST' then
@@ -70,18 +65,21 @@ describe('http_client.post_json', function()
   it('passes custom headers through as additional -H flags', function()
     local r = exec_lua(function()
       local commands = {}
-      vim.fn.jobstart = function(cmd, _opts)
+      vim.fn.jobstart = function(cmd, opts)
         for _, a in ipairs(cmd) do
           table.insert(commands, a)
         end
+        if opts and opts.on_exit then vim.schedule(function() opts.on_exit(nil, 0) end) end
         return 1
       end
       local http = require('mcp.util.http_client')
       http.post_json(
         'http://127.0.0.1:4096/mcp',
         '{}',
-        { timeout_ms = 1000, headers = { ['X-Trace-Id'] = 'abc123' } }
+        { timeout_ms = 1000, headers = { ['X-Trace-Id'] = 'abc123' } },
+        function() end
       )
+      vim.wait(50, function() return true end)
       return { commands = commands }
     end)
 
@@ -98,14 +96,16 @@ describe('http_client.post_json', function()
   it('threads Content-Type: application/json as a default header', function()
     local r = exec_lua(function()
       local commands = {}
-      vim.fn.jobstart = function(cmd, _opts)
+      vim.fn.jobstart = function(cmd, opts)
         for _, a in ipairs(cmd) do
           table.insert(commands, a)
         end
+        if opts and opts.on_exit then vim.schedule(function() opts.on_exit(nil, 0) end) end
         return 1
       end
       local http = require('mcp.util.http_client')
-      http.post_json('http://127.0.0.1:4096/mcp', '{}', { timeout_ms = 1000 })
+      http.post_json('http://127.0.0.1:4096/mcp', '{}', { timeout_ms = 1000 }, function() end)
+      vim.wait(50, function() return true end)
       return { commands = commands }
     end)
 

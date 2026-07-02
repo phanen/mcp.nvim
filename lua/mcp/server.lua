@@ -97,6 +97,18 @@ function Server:_dispatch(method, params)
   return nil, json_rpc.errors.method_not_found(method)
 end
 
+--- Drop the current session and re-arm the lifecycle state machine so
+--- a future `initialize` can establish a fresh handshake. Called by the
+--- HTTP transport when its last SSE stream drops — the only signal we
+--- have, lacking `Mcp-Session-Id`, that the previous client has gone.
+---@param self mcp.Server
+function Server:_reset_for_new_session()
+  if self.state == State.Closed then return end
+  self.state = State.Created
+  self.client_info = nil
+  self.client_capabilities = nil
+end
+
 ---@param self mcp.Server
 ---@param method string
 ---@param params table?

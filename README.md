@@ -7,8 +7,16 @@
   config = function()
     require('mcp').setup({})
     require('mcp.tools.lsp').register_all(require('mcp').registry())
-    require('mcp').attach_opencode()
+    -- require('mcp').attach_opencode()
   end,
+},
+{
+  "sudo-tee/opencode.nvim"
+  opts = {},
+  config = function(_, opts)
+    require('opencode').setup(opts)
+    require('mcp').attach_opencode()
+  end
 }
 ```
 

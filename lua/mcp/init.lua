@@ -148,6 +148,11 @@ function M._start_http()
     -- state machine through _on_notify.
     on_request = function(method, params) return mcp_server:_dispatch(method, params) end,
     on_notify = function(method, params) mcp_server:_on_notify(method, params) end,
+    -- When the last SSE stream drops, the only client we had is gone
+    -- and the next connect cycle will start with a fresh `initialize`.
+    -- We don't implement Mcp-Session-Id, so SSE-liveness is the only
+    -- session-end signal we have.
+    on_sse_closed = function() mcp_server:_reset_for_new_session() end,
   })
   M._state.http_server = server
   M._state.http_port = port
@@ -193,34 +198,29 @@ function M.http_port() return M._state.http_port end
 ---@field directory? string  workspace directory the registration is associated with (default `vim.fn.getcwd()`)
 
 --- POST the mcp.nvim URL to an opencode server's `mcp.add` endpoint
---- so opencode connects to us and pulls tools. Module-local: not
---- part of the public API. The only caller is `attach_opencode`; the
---- manual command path was removed because it duplicated the
---- auto-wire flow and left no good answer for the "no opencode.nvim"
---- user (they should edit `opencode.json` instead).
+--- so opencode connects to us and pulls tools. Module-local; only
+--- called from `do_register` inside `attach_opencode`.
 ---
---- Must be defined before `M.attach_opencode` so the closures inside
---- capture the local upvalue rather than the global of the same name.
+--- Must be defined before `M.attach_opencode` so its body captures
+--- the local `M` upvalue rather than a forward-declared global.
 ---@param opencode_url string  base URL of the running opencode server (e.g. http://127.0.0.1:4096)
 ---@param opts? mcp.OpencodeRegisterOpts
----@return table  { ok, status?, body?, error? }
-local function opencode_register(opencode_url, opts)
+---@param on_done fun(result: { ok: boolean, status?: integer, body?: any, error?: string })
+local function opencode_register(opencode_url, opts, on_done)
   opts = opts or {}
   local name = opts.name or 'nvim'
   local our_url = M.url()
   if not our_url then
-    return { ok = false, error = 'mcp HTTP server is not running; call setup() first' }
+    on_done({ ok = false, error = 'mcp HTTP server is not running; call setup() first' })
+    return
   end
 
-  -- opencode servers key MCP registrations by workspace directory. The
-  -- picker in opencode.nvim always queries `GET /mcp?directory=<cwd>`,
-  -- so we have to POST with the same directory for the server to
-  -- show up in the user's current project. Without this param the
-  -- server gets associated with the opencode process's own CWD and
-  -- is invisible from any project buffer.
+  -- opencode servers key MCP registrations by workspace directory; the
+  -- picker queries `GET /mcp?directory=<cwd>`, so we must POST with
+  -- the same directory or the server caches the entry against the
+  -- opencode process's CWD and the project buffer cannot see it.
   local directory = opts.directory or vim.fn.getcwd()
 
-  local http = require('mcp.util.http_client')
   local body = vim.json.encode({
     name = name,
     config = {
@@ -229,40 +229,43 @@ local function opencode_register(opencode_url, opts)
     },
   })
 
-  -- Tiny URL encoder: use Neovim's built-in. The opencode server
-  -- only does an exact-match on this value, so over-encoding is
-  -- fine as long as the bytes match the path on disk.
   local endpoint = (opencode_url:gsub('/$', ''))
     .. '/mcp?directory='
     .. vim.uri_encode(directory, 'rfc3986')
-  local result, err = http.post_json(endpoint, body, {
+
+  require('mcp.util.http_client').post_json(endpoint, body, {
     timeout_ms = opts.timeout_ms or 3000,
     headers = opts.headers or {},
-  })
+  }, function(result, err)
+    if err then
+      on_done({ ok = false, error = err })
+      return
+    end
 
-  if err then return { ok = false, error = err } end
+    if result.status < 200 or result.status >= 300 then
+      on_done({
+        ok = false,
+        status = result.status,
+        error = ('opencode rejected the registration (HTTP %d): %s'):format(
+          result.status,
+          result.body
+        ),
+      })
+      return
+    end
 
-  if result.status < 200 or result.status >= 300 then
-    return {
-      ok = false,
-      status = result.status,
-      error = ('opencode rejected the registration (HTTP %d): %s'):format(
-        result.status,
-        result.body
-      ),
-    }
-  end
-
-  local ok2, decoded = pcall(vim.json.decode, result.body)
-  if not ok2 then
-    return {
-      ok = true,
-      status = result.status,
-      body = result.body,
-      warning = 'response was not valid JSON',
-    }
-  end
-  return { ok = true, status = result.status, body = decoded }
+    local ok, decoded = pcall(vim.json.decode, result.body)
+    if ok then
+      on_done({ ok = true, status = result.status, body = decoded })
+    else
+      on_done({
+        ok = true,
+        status = result.status,
+        body = result.body,
+        warning = 'response was not valid JSON',
+      })
+    end
+  end)
 end
 
 --- Subscribe to a running opencode.nvim instance and auto-register
@@ -295,54 +298,46 @@ function M.attach_opencode(opts)
 
   -- All the actual wiring lives here so we can call it once now and
   -- again later if the EventManager wasn't ready yet. opencode.nvim
-  -- builds its EventManager as the last step of `require('opencode')
-  -- .setup(...)` (see opencode2/lua/opencode/event_manager.lua:632),
-  -- and mcp.nvim's `config = function()` is often called before that
-  -- because users typically don't declare a `dependencies` edge. So
-  -- the EventManager is usually nil on the first call. The fix is to
-  -- subscribe to the store's `event_manager` slot and re-run the
-  -- wiring once opencode.nvim publishes the real manager.
+  -- publishes its EventManager as the last step of setup, and our
+  -- `config = function()` typically runs before that (users rarely
+  -- declare a `dependencies` edge), so `attach_opencode` is normally
+  -- invoked twice. The fix is to subscribe to the store's
+  -- `event_manager` slot and re-run the wiring once it lands.
   --
   -- `last_registered_directory` and `last_server_url` are module-
-  -- scoped (not local to `wire`) because the "opencode.nvim already
-  -- connected" fast path also writes to them, and `wire`'s
-  -- cwd/active_session store subscribers read them via
-  -- `schedule_re_register`. The cwd/active_session check suppresses
-  -- redundant fires from opencode.nvim's own `check_cwd` (called
-  -- from `opencode_ok` shortly after `custom.server_ready`) pushing a
-  -- redundant `set_current_cwd` through the store while the first
-  -- `mcp.add` is still in the SSE handshake with the opencode HTTP
-  -- server.
+  -- scoped rather than closure-local because the fast path also
+  -- writes to them and `schedule_re_register` reads them across
+  -- `wire` invocations.
   local last_registered_directory
   local last_server_url
 
   local function do_register(url, directory)
     last_registered_directory = directory
-    local result = opencode_register(url, { name = opts.name, directory = directory })
-    if result.ok then
-      vim.notify(
-        string.format('[mcp] Registered with opencode at %s (workspace: %s)', url, directory),
-        vim.log.levels.INFO
-      )
-    else
-      vim.notify(
-        string.format(
-          '[mcp] Failed to register with opencode: %s',
-          result.error or ('status ' .. tostring(result.status))
-        ),
-        vim.log.levels.WARN
-      )
-    end
+    opencode_register(url, { name = opts.name, directory = directory }, function(result)
+      if result.ok then
+        vim.notify(
+          string.format('[mcp] Registered with opencode at %s (workspace: %s)', url, directory),
+          vim.log.levels.INFO
+        )
+      else
+        vim.notify(
+          string.format(
+            '[mcp] Failed to register with opencode: %s',
+            result.error or ('status ' .. tostring(result.status))
+          ),
+          vim.log.levels.WARN
+        )
+      end
+    end)
   end
 
   local function schedule_re_register(directory)
     if not last_server_url or type(directory) ~= 'string' or directory == '' then return end
-    -- Skip bursts where the directory hasn't actually changed.
-    -- This is the load-bearing skip: opencode.nvim's own
-    -- `check_cwd` (called from `opencode_ok` shortly after
-    -- `custom.server_ready`) pushes a redundant `set_current_cwd`
-    -- through the store, which would otherwise race the SSE
-    -- handshake the initial `mcp.add` is in the middle of.
+    -- Skip bursts where the directory hasn't actually changed:
+    -- opencode.nvim's `check_cwd` (called from `opencode_ok` shortly
+    -- after `custom.server_ready`) pushes a redundant `set_current_cwd`
+    -- through the store, which would otherwise race the SSE handshake
+    -- the initial `mcp.add` is in the middle of.
     if directory == last_registered_directory then return end
     if debounce_timer and not debounce_timer:is_closing() then
       debounce_timer:stop()
@@ -355,14 +350,8 @@ function M.attach_opencode(opts)
         debounce_timer:close()
       end
       debounce_timer = nil
-      -- libuv timer callbacks run in a fast event context in
-      -- which `vim.fn.jobstart` (and most other Vimscript
-      -- functions) are forbidden and raise E5560. Hop to the
-      -- main loop before touching the HTTP client.
-      vim.schedule(function()
-        if directory == last_registered_directory then return end
-        do_register(last_server_url, directory)
-      end)
+      if directory == last_registered_directory then return end
+      do_register(last_server_url, directory)
     end)
   end
 
@@ -380,7 +369,8 @@ function M.attach_opencode(opts)
     -- still produces a different directory and a real POST.
     oc_state.store.subscribe('current_cwd', function(_, new_val) schedule_re_register(new_val) end)
 
-    -- Same treatment for active-session swaps.
+    -- Re-register on active-session swaps too: a new session may land
+    -- in a different workspace.
     oc_state.store.subscribe(
       'active_session',
       function(_, new_val) schedule_re_register(new_val and new_val.directory) end
@@ -425,16 +415,16 @@ function M.attach_opencode(opts)
     return
   end
 
-  -- Fast path: EventManager is already wired. Wire immediately.
+  -- EventManager is already wired; just hand off to `wire`.
   if oc_state.event_manager then
     wire(oc_state.event_manager)
     M._state.opencode_attached = true
     return
   end
 
-  -- Slow path: watch the store for `event_manager` becoming set.
-  -- opencode.nvim publishes it as the final step of its setup, so
-  -- this callback fires once and then we never run again. Falls
+  -- Slow path: subscribe to the store for `event_manager` becoming
+  -- set. opencode.nvim publishes it as the last step of its setup,
+  -- so this callback runs at most once and then we are done. Falls
   -- through to the user-visible warning if opencode.nvim's state
   -- module is loaded but the store isn't (which would be unusual
   -- — e.g. a manual stub for unit tests).
