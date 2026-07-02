@@ -302,97 +302,133 @@ function M.attach_opencode(opts)
   -- the EventManager is usually nil on the first call. The fix is to
   -- subscribe to the store's `event_manager` slot and re-run the
   -- wiring once opencode.nvim publishes the real manager.
-  local function wire(event_manager)
-    local last_server_url
+  --
+  -- `last_registered_directory` and `last_server_url` are module-
+  -- scoped (not local to `wire`) because the "opencode.nvim already
+  -- connected" fast path also writes to them, and `wire`'s
+  -- cwd/active_session store subscribers read them via
+  -- `schedule_re_register`. The cwd/active_session check suppresses
+  -- redundant fires from opencode.nvim's own `check_cwd` (called
+  -- from `opencode_ok` shortly after `custom.server_ready`) pushing a
+  -- redundant `set_current_cwd` through the store while the first
+  -- `mcp.add` is still in the SSE handshake with the opencode HTTP
+  -- server.
+  local last_registered_directory
+  local last_server_url
 
-    -- Debounced re-registration. opencode.nvim's own `check_cwd`
-    -- can fire `set_current_cwd` once or twice during its init
-    -- (right after we register, before its HTTP server is fully
-    -- drained from the initial `mcp.add` we just sent). A 0ms
-    -- response races the in-flight `connectRemote` against a second
-    -- `mcp.add` request and the second one hits a 30s `connectTimeout`
-    -- from opencode's side that we cannot shorten. The debounce
-    -- waits long enough for the first request to complete (opencode
-    -- finishes the Streamable HTTP initialize handshake in <1s on
-    -- localhost) but stays short enough that a real user `:cd` is
-    -- still responsive.
-    local debounce_timer
-    local function schedule_re_register(directory)
-      if not last_server_url or type(directory) ~= 'string' or directory == '' then return end
+  local function do_register(url, directory)
+    last_registered_directory = directory
+    local result = opencode_register(url, { name = opts.name, directory = directory })
+    if result.ok then
+      vim.notify(
+        string.format('[mcp] Registered with opencode at %s (workspace: %s)', url, directory),
+        vim.log.levels.INFO
+      )
+    else
+      vim.notify(
+        string.format(
+          '[mcp] Failed to register with opencode: %s',
+          result.error or ('status ' .. tostring(result.status))
+        ),
+        vim.log.levels.WARN
+      )
+    end
+  end
+
+  local function schedule_re_register(directory)
+    if not last_server_url or type(directory) ~= 'string' or directory == '' then return end
+    -- Skip bursts where the directory hasn't actually changed.
+    -- This is the load-bearing skip: opencode.nvim's own
+    -- `check_cwd` (called from `opencode_ok` shortly after
+    -- `custom.server_ready`) pushes a redundant `set_current_cwd`
+    -- through the store, which would otherwise race the SSE
+    -- handshake the initial `mcp.add` is in the middle of.
+    if directory == last_registered_directory then return end
+    if debounce_timer and not debounce_timer:is_closing() then
+      debounce_timer:stop()
+      debounce_timer:close()
+    end
+    debounce_timer = vim.uv.new_timer()
+    debounce_timer:start(200, 0, function()
       if debounce_timer and not debounce_timer:is_closing() then
         debounce_timer:stop()
         debounce_timer:close()
       end
-      debounce_timer = vim.uv.new_timer()
-      debounce_timer:start(200, 0, function()
-        if debounce_timer and not debounce_timer:is_closing() then
-          debounce_timer:stop()
-          debounce_timer:close()
-        end
-        debounce_timer = nil
-        -- libuv timer callbacks run in a fast event context in
-        -- which `vim.fn.jobstart` (and most other Vimscript
-        -- functions) are forbidden and raise E5560. Hop to the
-        -- main loop before touching the HTTP client.
-        vim.schedule(function()
-          local result =
-            opencode_register(last_server_url, { name = opts.name, directory = directory })
-          if not result.ok then
-            vim.notify(
-              string.format(
-                '[mcp] Failed to (re)register against %s: %s',
-                directory,
-                result.error or 'unknown'
-              ),
-              vim.log.levels.WARN
-            )
-          end
-        end)
+      debounce_timer = nil
+      -- libuv timer callbacks run in a fast event context in
+      -- which `vim.fn.jobstart` (and most other Vimscript
+      -- functions) are forbidden and raise E5560. Hop to the
+      -- main loop before touching the HTTP client.
+      vim.schedule(function()
+        if directory == last_registered_directory then return end
+        do_register(last_server_url, directory)
       end)
-    end
+    end)
+  end
+
+  local function wire(event_manager)
+    local debounce_timer
 
     event_manager:subscribe('custom.server_ready', function(data)
       last_server_url = data.url
-      local directory = oc_state.current_cwd or vim.fn.getcwd()
-      local result = opencode_register(data.url, { name = opts.name, directory = directory })
-      if result.ok then
-        vim.notify(
-          string.format('[mcp] Registered with opencode at %s (workspace: %s)', data.url, directory),
-          vim.log.levels.INFO
-        )
-      else
-        vim.notify(
-          string.format(
-            '[mcp] Failed to register with opencode: %s',
-            result.error or ('status ' .. tostring(result.status))
-          ),
-          vim.log.levels.WARN
-        )
-      end
+      do_register(data.url, oc_state.current_cwd or vim.fn.getcwd())
     end)
 
-    -- Re-register when opencode.nvim's tracked cwd changes (e.g. the
-    -- user runs `:cd`, opens a new tab in a different folder, or
-    -- opencode.nvim updates its state from elsewhere). The 200ms
-    -- debounce collapses bursts of cwd changes (e.g. opencode.nvim's
-    -- own init path) into a single POST and gives opencode's HTTP
-    -- server time to drain the prior `mcp.add`.
+    -- Re-register when opencode.nvim's tracked cwd changes. The
+    -- `last_registered_directory` check above suppresses redundant
+    -- fires from opencode.nvim's own init path; a real user `:cd`
+    -- still produces a different directory and a real POST.
     oc_state.store.subscribe('current_cwd', function(_, new_val) schedule_re_register(new_val) end)
 
-    -- Same treatment for active-session swaps: the session's
-    -- `directory` is a more authoritative "where am I" than cwd
-    -- when the user opens opencode in a project root.
-    oc_state.store.subscribe('active_session', function(_, new_val)
-      local dir = new_val and new_val.directory
-      schedule_re_register(dir)
-    end)
+    -- Same treatment for active-session swaps.
+    oc_state.store.subscribe(
+      'active_session',
+      function(_, new_val) schedule_re_register(new_val and new_val.directory) end
+    )
+  end
 
+  -- Fast path: opencode.nvim is already wired to its server and
+  -- `state.opencode_server.url` is populated. This covers the case
+  -- where `attach_opencode` is called *after* `:Opencode toggle`
+  -- (i.e. `custom.server_ready` has already fired and will not fire
+  -- again on its own). Read the URL directly instead of waiting for
+  -- an event that will never come, then subscribe to cwd/active_session
+  -- for the user-`:cd` case the same way the slow path would.
+  if oc_state.opencode_server and oc_state.opencode_server.url then
+    local last_server_url = oc_state.opencode_server.url
+    local directory = oc_state.current_cwd or vim.fn.getcwd()
+    do_register(last_server_url, directory)
+
+    local function attach_followups()
+      local debounce_timer
+      oc_state.store.subscribe(
+        'current_cwd',
+        function(_, new_val) schedule_re_register(new_val) end
+      )
+      oc_state.store.subscribe(
+        'active_session',
+        function(_, new_val) schedule_re_register(new_val and new_val.directory) end
+      )
+    end
+    if oc_state.event_manager then
+      oc_state.event_manager:subscribe('custom.server_ready', function(data) end)
+      attach_followups()
+    elseif oc_state.store and oc_state.store.subscribe then
+      oc_state.store.subscribe('event_manager', function(_, new_val)
+        if M._state.opencode_attached then return end
+        if not new_val then return end
+        new_val:subscribe('custom.server_ready', function(data) end)
+        attach_followups()
+      end)
+    end
     M._state.opencode_attached = true
+    return
   end
 
   -- Fast path: EventManager is already wired. Wire immediately.
   if oc_state.event_manager then
     wire(oc_state.event_manager)
+    M._state.opencode_attached = true
     return
   end
 
@@ -417,6 +453,7 @@ function M.attach_opencode(opts)
     if M._state.opencode_attached then return end
     if not new_val then return end
     wire(new_val)
+    M._state.opencode_attached = true
   end)
 end
 

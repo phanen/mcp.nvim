@@ -141,8 +141,12 @@ describe('attach_opencode', function()
       -- Simulate opencode.nvim emitting on its state store. The
       -- callback signature is cb(key, new_val, old_val); we ignore
       -- the key/old_val args. These two fire back-to-back inside the
-      -- 200ms debounce window and collapse into a single POST.
-      store_subs['current_cwd']('current_cwd', '/home/phan/b/projB', '/home/phan/b/projA')
+      -- 200ms debounce window; the cwd change gets suppressed by the
+      -- last_registered_directory check (its value is the same as
+      -- the initial server_ready POST), and the active_session
+      -- change carries a *different* directory so it wins and gets
+      -- posted.
+      store_subs['current_cwd']('current_cwd', '/home/phan/b/projA', '/home/phan/b/projA')
       store_subs['active_session'](
         'active_session',
         { id = 's1', directory = '/home/phan/b/projC' },
@@ -162,8 +166,10 @@ describe('attach_opencode', function()
       }
     end)
 
-    -- server_ready fires immediately, then cwd + active_session
-    -- collapse into a single debounced POST.
+    -- server_ready fires immediately, the cwd change is suppressed
+    -- (same directory as the server_ready POST), and the active_session
+    -- change (different directory) collapses with the debounce into
+    -- one debounced POST.
     eq(2, #out.calls, 'expected 2 POSTs total (server_ready + debounced)')
     -- First POST: triggered by custom.server_ready with cwd=projA.
     eq(
@@ -171,8 +177,8 @@ describe('attach_opencode', function()
       out.calls[1].url:find('directory=' .. out.enc_a) ~= nil,
       'first POST should target projA, got: ' .. out.calls[1].url
     )
-    -- Second: the debounced POST should carry the latest directory
-    -- (projC, from the active_session event that fired last).
+    -- Second: the debounced POST should carry projC, the directory
+    -- the active_session event pushed (cwd was suppressed as no-op).
     eq(
       true,
       out.calls[2].url:find('directory=' .. out.enc_c) ~= nil,
@@ -357,4 +363,141 @@ describe('attach_opencode', function()
     -- for the debounced POST should reference /home/c.
     eq(true, out.calls[2].url:find('/home/c') ~= nil, out.calls[2].url)
   end)
+
+  it(
+    'POSTs directly when opencode.nvim is already connected (no custom.server_ready fires again)',
+    function()
+      local out = exec_lua(function()
+        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+          .. ';'
+          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+          .. ';'
+          .. package.path
+
+        local fake_em = { _subs = {}, _calls = 0 }
+        fake_em.subscribe = function(self, event, cb)
+          fake_em._subs[event] = cb
+          fake_em._calls = fake_em._calls + 1
+        end
+
+        local store_listeners = {}
+        local store_state = {
+          -- The Scenario 1 signature: opencode.nvim is already
+          -- connected to its server before mcp.nvim's attach_opencode
+          -- runs. state.opencode_server.url is populated; only the
+          -- store and event_manager are exposed.
+          event_manager = fake_em,
+          opencode_server = { url = 'http://127.0.0.1:4096', port = 4096 },
+          current_cwd = '/home/phan/b/proj',
+        }
+        local function fire(key)
+          for _, cb in ipairs(store_listeners[key] or {}) do
+            cb(key, store_state[key], nil)
+          end
+        end
+        local store = {}
+        function store.subscribe(key, cb)
+          store_listeners[key] = store_listeners[key] or {}
+          table.insert(store_listeners[key], cb)
+        end
+        function store.set(key, value)
+          store_state[key] = value
+          fire(key)
+        end
+        function store.get(key) return store_state[key] end
+        store_state.store = store
+
+        local calls = {}
+        package.loaded['opencode.state'] = store_state
+        local http = require('mcp.util.http_client')
+        http.post_json = function(url, body, _opts)
+          table.insert(calls, { url = url, body = body })
+          return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+        end
+
+        local mcp = require('mcp')
+        mcp.setup({})
+        -- attach_opencode runs AFTER :Opencode toggle. custom.server_ready
+        -- has already fired in opencode.nvim; no new emission will happen.
+        mcp.attach_opencode({ name = 'my-nvim' })
+
+        return {
+          calls = calls,
+          attached = mcp._state.opencode_attached,
+          -- The fast path should NOT have subscribed to custom.server_ready
+          -- (otherwise the second call from opencode.nvim's later event
+          -- would be a no-op since we already registered, but a stale
+          -- subscription would still live).
+          subscribe_count = fake_em._calls,
+          -- Expose the raw URL for debugging the test itself; the
+          -- printable form below also shows it on failure.
+          raw_url = calls[1] and calls[1].url or '',
+        }
+      end)
+
+      eq(true, out.attached)
+      eq(
+        1,
+        #out.calls,
+        'expected exactly one POST (the direct read of state.opencode_server.url), got calls='
+          .. vim.inspect(out.calls)
+      )
+      -- The URL should be the opencode server's URL, not the mcp server's
+      -- (we POST TO opencode, our config is in the body).
+      print('  [debug] calls[1].url=' .. (out.calls[1] and out.calls[1].url or 'nil'))
+      print(
+        '  [debug] find result='
+          .. tostring(
+            out.calls[1] and out.calls[1].url and out.calls[1].url:find('127.0.0.1:4096', 1, true)
+          )
+      )
+      print(
+        '  [debug] find ~= nil = '
+          .. tostring(
+            out.calls[1]
+              and out.calls[1].url
+              and (out.calls[1].url:find('127.0.0.1:4096', 1, true) ~= nil)
+          )
+      )
+      print(
+        '  [outer debug] out.calls[1].url = '
+          .. tostring(out.calls[1] and out.calls[1].url or 'nil')
+      )
+      print(
+        '  [outer debug] find result = '
+          .. tostring(
+            out.calls[1] and out.calls[1].url and out.calls[1].url:find('127.0.0.1:4096', 1, true)
+          )
+      )
+      local v = out.calls[1]
+        and out.calls[1].url
+        and (out.calls[1].url:find('127.0.0.1:4096', 1, true) ~= nil)
+      print('  [outer debug] v = ' .. tostring(v) .. ' type=' .. type(v))
+      eq(
+        true,
+        v,
+        'expected URL to contain 127.0.0.1:4096, got: '
+          .. (out.calls[1] and out.calls[1].url or 'no call')
+      )
+      -- Body carries the mcp server URL and the workspace directory.
+      -- Body carries name + the mcp server URL + type=remote. (The
+      -- `?directory=` query param is in the URL, not the body.)
+      eq(
+        true,
+        out.calls[1]
+          and out.calls[1].body
+          and out.calls[1].body:find('"name":"my-nvim"', 1, true) ~= nil,
+        'body should carry name=my-nvim, got: '
+          .. tostring(out.calls[1] and out.calls[1].body or 'no body')
+      )
+      eq(
+        true,
+        out.calls[1]
+          and out.calls[1].body
+          and out.calls[1].body:find('"type":"remote"', 1, true) ~= nil,
+        'body should carry type=remote, got: '
+          .. tostring(out.calls[1] and out.calls[1].body or 'no body')
+      )
+    end
+  )
 end)
