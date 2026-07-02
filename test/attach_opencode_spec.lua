@@ -217,4 +217,74 @@ describe('attach_opencode', function()
     eq(true, out.ok)
     eq(false, out.attached)
   end)
+
+  it(
+    'defers until the opencode.nvim EventManager becomes available and then completes the wire',
+    function()
+      local out = exec_lua(function()
+        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+          .. ';'
+          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+          .. ';'
+          .. package.path
+
+        local fake_em = { _subs = {}, _calls = {} }
+        fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
+
+        -- The store has to be able to deliver changes synchronously
+        -- for the test; we mirror the opencode.nvim store API
+        -- (subscribe + mutate-by-callback).
+        local store_listeners = {}
+        local store_state = { event_manager = nil, current_cwd = '/home/x' }
+        local function fire(key)
+          for _, cb in ipairs(store_listeners[key] or {}) do
+            cb(key, store_state[key], nil)
+          end
+          for _, cb in ipairs(store_listeners['*'] or {}) do
+            cb(key, store_state[key], nil)
+          end
+        end
+        local store = {}
+        function store.subscribe(key, cb)
+          store_listeners[key] = store_listeners[key] or {}
+          table.insert(store_listeners[key], cb)
+        end
+        function store.set(key, value)
+          store_state[key] = value
+          fire(key)
+        end
+        function store.get(key) return store_state[key] end
+
+        -- opencode.nvim's first call sees EventManager == nil; the
+        -- second time the store fires we should auto-wire.
+        package.loaded['opencode.state'] = {
+          event_manager = nil,
+          store = store,
+        }
+
+        local http = require('mcp.util.http_client')
+        http.post_json = function(url, body, _opts)
+          return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+        end
+
+        local mcp = require('mcp')
+        mcp.setup({})
+        mcp.attach_opencode({ name = 'my-nvim' })
+
+        local first_state = mcp._state.opencode_attached
+        -- Simulate opencode.nvim publishing the EventManager after its
+        -- final setup step.
+        store.set('event_manager', fake_em)
+        local second_state = mcp._state.opencode_attached
+
+        return {
+          first_state = first_state,
+          second_state = second_state,
+        }
+      end)
+
+      eq(false, out.first_state, 'should not be attached until EventManager is published')
+      eq(true, out.second_state, 'should auto-attach once EventManager is published')
+    end
+  )
 end)

@@ -292,71 +292,100 @@ function M.attach_opencode(opts)
     vim.notify('[mcp] opencode.nvim is not installed; skipping attach', vim.log.levels.INFO)
     return
   end
-  local event_manager = oc_state.event_manager
-  if not event_manager then
+
+  -- All the actual wiring lives here so we can call it once now and
+  -- again later if the EventManager wasn't ready yet. opencode.nvim
+  -- builds its EventManager as the last step of `require('opencode')
+  -- .setup(...)` (see opencode2/lua/opencode/event_manager.lua:632),
+  -- and mcp.nvim's `config = function()` is often called before that
+  -- because users typically don't declare a `dependencies` edge. So
+  -- the EventManager is usually nil on the first call. The fix is to
+  -- subscribe to the store's `event_manager` slot and re-run the
+  -- wiring once opencode.nvim publishes the real manager.
+  local function wire(event_manager)
+    local last_server_url
+
+    ---@param directory string
+    local function re_register_for(directory)
+      if not last_server_url then return end
+      local result = opencode_register(last_server_url, { name = opts.name, directory = directory })
+      if not result.ok then
+        vim.notify(
+          string.format(
+            '[mcp] Failed to (re)register against %s: %s',
+            directory,
+            result.error or 'unknown'
+          ),
+          vim.log.levels.WARN
+        )
+      end
+    end
+
+    event_manager:subscribe('custom.server_ready', function(data)
+      last_server_url = data.url
+      local directory = oc_state.current_cwd or vim.fn.getcwd()
+      local result = opencode_register(data.url, { name = opts.name, directory = directory })
+      if result.ok then
+        vim.notify(
+          string.format('[mcp] Registered with opencode at %s (workspace: %s)', data.url, directory),
+          vim.log.levels.INFO
+        )
+      else
+        vim.notify(
+          string.format(
+            '[mcp] Failed to register with opencode: %s',
+            result.error or ('status ' .. tostring(result.status))
+          ),
+          vim.log.levels.WARN
+        )
+      end
+    end)
+
+    -- Re-register when opencode.nvim's tracked cwd changes (e.g. the
+    -- user runs `:cd`, opens a new tab in a different folder, or
+    -- opencode.nvim updates its state from elsewhere).
+    oc_state.store.subscribe('current_cwd', function(_, new_val)
+      if type(new_val) == 'string' and new_val ~= '' then re_register_for(new_val) end
+    end)
+
+    -- Re-register when the active session swaps to one anchored in
+    -- a different directory.
+    oc_state.store.subscribe('active_session', function(_, new_val)
+      local dir = new_val and new_val.directory
+      if type(dir) == 'string' and dir ~= '' then re_register_for(dir) end
+    end)
+
+    M._state.opencode_attached = true
+  end
+
+  -- Fast path: EventManager is already wired. Wire immediately.
+  if oc_state.event_manager then
+    wire(oc_state.event_manager)
+    return
+  end
+
+  -- Slow path: watch the store for `event_manager` becoming set.
+  -- opencode.nvim publishes it as the final step of its setup, so
+  -- this callback fires once and then we never run again. Falls
+  -- through to the user-visible warning if opencode.nvim's state
+  -- module is loaded but the store isn't (which would be unusual
+  -- — e.g. a manual stub for unit tests).
+  if not (oc_state.store and oc_state.store.subscribe) then
     vim.notify(
-      '[mcp] opencode.nvim is loaded but its EventManager is not ready yet; retry after :Opencode',
+      '[mcp] opencode.nvim is loaded but its state store is missing; attach_opencode is a no-op',
       vim.log.levels.WARN
     )
     return
   end
-
-  -- The most recent opencode server URL we know about. Captured
-  -- from the custom.server_ready event so the state-subscriptions
-  -- below have something to POST against.
-  local last_server_url
-
-  ---@param directory string
-  local function re_register_for(directory)
-    if not last_server_url then return end
-    local result = opencode_register(last_server_url, { name = opts.name, directory = directory })
-    if not result.ok then
-      vim.notify(
-        string.format(
-          '[mcp] Failed to (re)register against %s: %s',
-          directory,
-          result.error or 'unknown'
-        ),
-        vim.log.levels.WARN
-      )
-    end
-  end
-
-  event_manager:subscribe('custom.server_ready', function(data)
-    last_server_url = data.url
-    local directory = oc_state.current_cwd or vim.fn.getcwd()
-    local result = opencode_register(data.url, { name = opts.name, directory = directory })
-    if result.ok then
-      vim.notify(
-        string.format('[mcp] Registered with opencode at %s (workspace: %s)', data.url, directory),
-        vim.log.levels.INFO
-      )
-    else
-      vim.notify(
-        string.format(
-          '[mcp] Failed to register with opencode: %s',
-          result.error or ('status ' .. tostring(result.status))
-        ),
-        vim.log.levels.WARN
-      )
-    end
+  vim.notify(
+    '[mcp] opencode.nvim EventManager not ready yet; deferring attach until it is',
+    vim.log.levels.INFO
+  )
+  oc_state.store.subscribe('event_manager', function(_, new_val)
+    if M._state.opencode_attached then return end
+    if not new_val then return end
+    wire(new_val)
   end)
-
-  -- Re-register when opencode.nvim's tracked cwd changes (e.g. the
-  -- user runs `:cd`, opens a new tab in a different folder, or
-  -- opencode.nvim updates its state from elsewhere).
-  oc_state.store.subscribe('current_cwd', function(_, new_val)
-    if type(new_val) == 'string' and new_val ~= '' then re_register_for(new_val) end
-  end)
-
-  -- Re-register when the active session swaps to one anchored in
-  -- a different directory.
-  oc_state.store.subscribe('active_session', function(_, new_val)
-    local dir = new_val and new_val.directory
-    if type(dir) == 'string' and dir ~= '' then re_register_for(dir) end
-  end)
-
-  M._state.opencode_attached = true
 end
 
 --- Public URL of the bound HTTP server, suitable for passing to an
