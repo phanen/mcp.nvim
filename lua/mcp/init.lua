@@ -330,18 +330,24 @@ function M.attach_opencode(opts)
           debounce_timer:close()
         end
         debounce_timer = nil
-        local result =
-          opencode_register(last_server_url, { name = opts.name, directory = directory })
-        if not result.ok then
-          vim.notify(
-            string.format(
-              '[mcp] Failed to (re)register against %s: %s',
-              directory,
-              result.error or 'unknown'
-            ),
-            vim.log.levels.WARN
-          )
-        end
+        -- libuv timer callbacks run in a fast event context in
+        -- which `vim.fn.jobstart` (and most other Vimscript
+        -- functions) are forbidden and raise E5560. Hop to the
+        -- main loop before touching the HTTP client.
+        vim.schedule(function()
+          local result =
+            opencode_register(last_server_url, { name = opts.name, directory = directory })
+          if not result.ok then
+            vim.notify(
+              string.format(
+                '[mcp] Failed to (re)register against %s: %s',
+                directory,
+                result.error or 'unknown'
+              ),
+              vim.log.levels.WARN
+            )
+          end
+        end)
       end)
     end
 
