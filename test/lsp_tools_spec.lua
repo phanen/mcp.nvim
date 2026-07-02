@@ -80,8 +80,9 @@ describe('lsp tools', function()
     eq('lsp_hover', names[3])
     eq('lsp_implementation', names[4])
     eq('lsp_references', names[5])
-    eq('lsp_type_definition', names[6])
-    eq('lsp_workspace_symbols', names[7])
+    eq('lsp_rename', names[6])
+    eq('lsp_type_definition', names[7])
+    eq('lsp_workspace_symbols', names[8])
   end)
 
   it('lsp_definition formats Location results as file:line:col lines', function()
@@ -224,5 +225,160 @@ describe('lsp tools', function()
     -- nil result, second value is the error string
     eq(nil, out.r)
     eq(true, type(out.err) == 'string' and out.err:find('timed out') ~= nil, tostring(out.err))
+  end)
+
+  -- `local foo = 1\nreturn foo\n` so rename edits are observable.
+  local function setup_rename_fixture()
+    exec_lua(function()
+      local f = io.open('lsp_test_fixture.txt', 'w')
+      f:write('local foo = 1\n')
+      f:write('return foo\n')
+      f:close()
+    end)
+  end
+
+  it('lsp_rename sends newName in the LSP params', function()
+    setup_rename_fixture()
+    local out = with_mock_lsp(
+      { changes = {} },
+      [[
+        local registry = require('mcp.tool_registry').new()
+        require('mcp.tools.lsp').register_all(registry)
+        registry:get('lsp_rename').handler({
+          path = 'lsp_test_fixture.txt', line = 0, character = 6,
+          new_name = 'bar',
+        })
+        return _G.__captured
+      ]]
+    )
+    eq('bar', out.newName)
+    eq(0, out.position.line)
+    eq(6, out.position.character)
+    eq(true, out.textDocument.uri:find('lsp_test_fixture.txt') ~= nil, out.textDocument.uri)
+  end)
+
+  it('lsp_rename applies WorkspaceEdit.changes to the affected buffers', function()
+    setup_rename_fixture()
+    local out = exec_lua([[
+      local f = io.open('lsp_test_fixture.txt', 'w')
+      f:write('local foo = 1\n')
+      f:write('return foo\n')
+      f:close()
+
+      _G.__original_buf_request_sync = vim.lsp.buf_request_sync
+      local fixture_uri = 'file://' .. vim.fn.fnamemodify('lsp_test_fixture.txt', ':p')
+      vim.lsp.buf_request_sync = function(_, _, params, _)
+        _G.__captured = params
+        return { { result = {
+          changes = {
+            [fixture_uri] = {
+              { range = { start = { line = 0, character = 6 }, ['end'] = { line = 0, character = 9 } }, newText = 'bar' },
+              { range = { start = { line = 1, character = 7 }, ['end'] = { line = 1, character = 10 } }, newText = 'bar' },
+            },
+          },
+        } } }
+      end
+
+      local registry = require('mcp.tool_registry').new()
+      require('mcp.tools.lsp').register_all(registry)
+      local res = registry:get('lsp_rename').handler({
+        path = 'lsp_test_fixture.txt', line = 0, character = 7,
+        new_name = 'bar',
+      })
+      local buf = vim.fn.bufadd(vim.fn.fnamemodify('lsp_test_fixture.txt', ':p'))
+      local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+      return { res = res, captured = _G.__captured, lines = lines }
+    ]])
+    eq('local bar = 1', out.lines[1])
+    eq('return bar', out.lines[2])
+    eq(true, out.res[1].text:find('Renamed to "bar"') ~= nil, out.res[1].text)
+    eq(true, out.res[1].text:find('2 edit') ~= nil, out.res[1].text)
+    eq(true, out.res[1].text:find('1 file') ~= nil, out.res[1].text)
+  end)
+
+  it('lsp_rename applies edits via documentChanges when changes is absent', function()
+    setup_rename_fixture()
+    local out = exec_lua([[
+      local f = io.open('lsp_test_fixture.txt', 'w')
+      f:write('local foo = 1\n')
+      f:close()
+
+      _G.__original_buf_request_sync = vim.lsp.buf_request_sync
+      local fixture_uri = 'file://' .. vim.fn.fnamemodify('lsp_test_fixture.txt', ':p')
+      vim.lsp.buf_request_sync = function(_, _, params, _)
+        return { { result = {
+          documentChanges = {
+            {
+              textDocument = { uri = fixture_uri, version = 1 },
+              edits = {
+                { range = { start = { line = 0, character = 6 }, ['end'] = { line = 0, character = 9 } }, newText = 'baz' },
+              },
+            },
+          },
+        } } }
+      end
+
+      local registry = require('mcp.tool_registry').new()
+      require('mcp.tools.lsp').register_all(registry)
+      registry:get('lsp_rename').handler({
+        path = 'lsp_test_fixture.txt', line = 0, character = 7,
+        new_name = 'baz',
+      })
+      local buf = vim.fn.bufadd(vim.fn.fnamemodify('lsp_test_fixture.txt', ':p'))
+      return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    ]])
+    eq('local baz = 1', out[1])
+  end)
+
+  it('lsp_rename returns a clean message when the LSP returns no edits', function()
+    setup_rename_fixture()
+    local out = with_mock_lsp(
+      nil,
+      [[
+        local registry = require('mcp.tool_registry').new()
+        require('mcp.tools.lsp').register_all(registry)
+        return registry:get('lsp_rename').handler({
+          path = 'lsp_test_fixture.txt', line = 0, character = 0,
+          new_name = 'bar',
+        })
+      ]]
+    )
+    eq(true, out[1].text:find('No rename edits returned') ~= nil, out[1].text)
+  end)
+
+  it('lsp_rename applies edits in reverse order so positions stay valid', function()
+    setup_rename_fixture()
+    -- Two adjacent edits on the same line: document-order application
+    -- would shift the second range; reverse-order keeps byte offsets.
+    local out = exec_lua([[
+      local f = io.open('lsp_test_fixture.txt', 'w')
+      f:write('aa bb cc dd\n')
+      f:close()
+
+      _G.__original_buf_request_sync = vim.lsp.buf_request_sync
+      local fixture_uri = 'file://' .. vim.fn.fnamemodify('lsp_test_fixture.txt', ':p')
+      vim.lsp.buf_request_sync = function(_, _, params, _)
+        return { { result = {
+          changes = {
+            [fixture_uri] = {
+              -- Replace "bb" with "BBB" at col 3..5
+              { range = { start = { line = 0, character = 3 }, ['end'] = { line = 0, character = 5 } }, newText = 'BBB' },
+              -- Replace "cc" with "CCC" at col 6..8
+              { range = { start = { line = 0, character = 6 }, ['end'] = { line = 0, character = 8 } }, newText = 'CCC' },
+            },
+          },
+        } } }
+      end
+
+      local registry = require('mcp.tool_registry').new()
+      require('mcp.tools.lsp').register_all(registry)
+      registry:get('lsp_rename').handler({
+        path = 'lsp_test_fixture.txt', line = 0, character = 0,
+        new_name = 'unused',
+      })
+      local buf = vim.fn.bufadd(vim.fn.fnamemodify('lsp_test_fixture.txt', ':p'))
+      return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    ]])
+    eq('aa BBB CCC dd', out[1])
   end)
 end)

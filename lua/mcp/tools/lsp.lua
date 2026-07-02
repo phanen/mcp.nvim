@@ -134,6 +134,63 @@ local function buf_request_sync(bufnr, method, params, timeout_ms)
   return results, errors
 end
 
+--- Apply TextEdits in reverse start-position order so earlier ranges
+--- do not shift under later insertions.
+---@param bufnr integer
+---@param edits table[]
+local function apply_text_edits(bufnr, edits)
+  if not edits or #edits == 0 then return end
+  local sorted = {}
+  for _, e in ipairs(edits) do
+    table.insert(sorted, e)
+  end
+  table.sort(sorted, function(a, b)
+    local la, lb = a.range.start.line, b.range.start.line
+    if la ~= lb then return la > lb end
+    return a.range.start.character > b.range.start.character
+  end)
+  for _, edit in ipairs(sorted) do
+    local s = edit.range.start
+    local e = edit.range['end']
+    local replacement = edit.newText or ''
+    local lines = vim.split(replacement, '\n', { plain = true })
+    vim.api.nvim_buf_set_text(bufnr, s.line, s.character, e.line, e.character, lines)
+  end
+end
+
+--- Apply a WorkspaceEdit, handling both `changes` and `documentChanges`
+--- shapes. File-level ops inside `documentChanges` are skipped.
+---@param edit table  WorkspaceEdit from the LSP server
+---@return string[] paths
+---@return table<string, table[]> edits_by_path
+local function apply_workspace_edit(edit)
+  local edits_by_path = {}
+  if edit.changes then
+    for uri, edits in pairs(edit.changes) do
+      edits_by_path[uri_to_path(uri)] = edits
+    end
+  end
+  if edit.documentChanges then
+    for _, change in ipairs(edit.documentChanges) do
+      if change.textDocument then
+        edits_by_path[uri_to_path(change.textDocument.uri)] = change.edits
+      end
+    end
+  end
+  for path, edits in pairs(edits_by_path) do
+    local abs = vim.fn.fnamemodify(path, ':p')
+    local buf = vim.fn.bufadd(abs)
+    vim.fn.bufload(buf)
+    apply_text_edits(buf, edits)
+  end
+  local paths = {}
+  for p in pairs(edits_by_path) do
+    paths[#paths + 1] = p
+  end
+  table.sort(paths)
+  return paths, edits_by_path
+end
+
 --- Text content wrapper. Always returns the shape mcp.server expects
 --- from a tool handler.
 local function text(content) return { { type = 'text', text = content } } end
@@ -397,9 +454,93 @@ function M.register_all(registry, opts)
       return text(table.concat(lines, '\n'))
     end,
   })
+
+  -- lsp_rename: rename a symbol across the workspace. Buffers are
+  -- left modified but unsaved — matching `vim.lsp.buf.rename`.
+  registry:register({
+    name = 'lsp_rename',
+    description = 'Rename the symbol at path/line/column to new_name. Sends `textDocument/rename` to the LSP client attached to the file and applies the returned WorkspaceEdit to the affected buffers (unsaved). Returns one `file:line:col` line per applied edit, sorted by file then position.',
+    inputSchema = {
+      type = 'object',
+      properties = {
+        path = {
+          type = 'string',
+          description = 'Absolute file path. Must be loaded into a buffer.',
+        },
+        line = { type = 'integer', minimum = 0, description = '0-indexed line of the symbol.' },
+        character = {
+          type = 'integer',
+          minimum = 0,
+          description = '0-indexed character of the symbol.',
+        },
+        new_name = { type = 'string', description = 'The new name to rename the symbol to.' },
+      },
+      required = { 'path', 'line', 'character', 'new_name' },
+    },
+    handler = function(args)
+      local buf, uri = ensure_buffer(args.path)
+      local results, errors = buf_request_sync(buf, 'textDocument/rename', {
+        textDocument = { uri = uri },
+        position = { line = args.line, character = args.character },
+        newName = args.new_name,
+      }, timeout)
+      if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
+
+      local edit = nil
+      for _, r in ipairs(results) do
+        if r ~= nil then
+          edit = r
+          break
+        end
+      end
+
+      if not edit or (not edit.changes and not edit.documentChanges) then
+        return text('No rename edits returned (symbol may not be renameable at this position).')
+      end
+
+      local paths, edits_by_path = apply_workspace_edit(edit)
+
+      local total = 0
+      for _, edits in pairs(edits_by_path) do
+        total = total + #edits
+      end
+
+      local lines = {
+        string.format(
+          'Renamed to %q (%d edit(s) across %d file(s)):',
+          args.new_name,
+          total,
+          #paths
+        ),
+      }
+      for _, path in ipairs(paths) do
+        local edits = edits_by_path[path]
+        local ordered = {}
+        for _, e in ipairs(edits) do
+          table.insert(ordered, e)
+        end
+        table.sort(ordered, function(a, b)
+          if a.range.start.line ~= b.range.start.line then
+            return a.range.start.line < b.range.start.line
+          end
+          return a.range.start.character < b.range.start.character
+        end)
+        for _, e in ipairs(ordered) do
+          local s = e.range.start
+          table.insert(
+            lines,
+            string.format('%s:%d:%d', path, (s.line or 0) + 1, (s.character or 0) + 1)
+          )
+        end
+      end
+      return text(table.concat(lines, '\n'))
+    end,
+  })
 end
 
 M._format_location = format_location
 M._format_symbol = format_symbol
 M._text = text
+M._apply_text_edits = apply_text_edits
+M._apply_workspace_edit = apply_workspace_edit
 return M
