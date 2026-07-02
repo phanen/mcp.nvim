@@ -305,20 +305,44 @@ function M.attach_opencode(opts)
   local function wire(event_manager)
     local last_server_url
 
-    ---@param directory string
-    local function re_register_for(directory)
-      if not last_server_url then return end
-      local result = opencode_register(last_server_url, { name = opts.name, directory = directory })
-      if not result.ok then
-        vim.notify(
-          string.format(
-            '[mcp] Failed to (re)register against %s: %s',
-            directory,
-            result.error or 'unknown'
-          ),
-          vim.log.levels.WARN
-        )
+    -- Debounced re-registration. opencode.nvim's own `check_cwd`
+    -- can fire `set_current_cwd` once or twice during its init
+    -- (right after we register, before its HTTP server is fully
+    -- drained from the initial `mcp.add` we just sent). A 0ms
+    -- response races the in-flight `connectRemote` against a second
+    -- `mcp.add` request and the second one hits a 30s `connectTimeout`
+    -- from opencode's side that we cannot shorten. The debounce
+    -- waits long enough for the first request to complete (opencode
+    -- finishes the Streamable HTTP initialize handshake in <1s on
+    -- localhost) but stays short enough that a real user `:cd` is
+    -- still responsive.
+    local debounce_timer
+    local function schedule_re_register(directory)
+      if not last_server_url or type(directory) ~= 'string' or directory == '' then return end
+      if debounce_timer and not debounce_timer:is_closing() then
+        debounce_timer:stop()
+        debounce_timer:close()
       end
+      debounce_timer = vim.uv.new_timer()
+      debounce_timer:start(200, 0, function()
+        if debounce_timer and not debounce_timer:is_closing() then
+          debounce_timer:stop()
+          debounce_timer:close()
+        end
+        debounce_timer = nil
+        local result =
+          opencode_register(last_server_url, { name = opts.name, directory = directory })
+        if not result.ok then
+          vim.notify(
+            string.format(
+              '[mcp] Failed to (re)register against %s: %s',
+              directory,
+              result.error or 'unknown'
+            ),
+            vim.log.levels.WARN
+          )
+        end
+      end)
     end
 
     event_manager:subscribe('custom.server_ready', function(data)
@@ -343,16 +367,18 @@ function M.attach_opencode(opts)
 
     -- Re-register when opencode.nvim's tracked cwd changes (e.g. the
     -- user runs `:cd`, opens a new tab in a different folder, or
-    -- opencode.nvim updates its state from elsewhere).
-    oc_state.store.subscribe('current_cwd', function(_, new_val)
-      if type(new_val) == 'string' and new_val ~= '' then re_register_for(new_val) end
-    end)
+    -- opencode.nvim updates its state from elsewhere). The 200ms
+    -- debounce collapses bursts of cwd changes (e.g. opencode.nvim's
+    -- own init path) into a single POST and gives opencode's HTTP
+    -- server time to drain the prior `mcp.add`.
+    oc_state.store.subscribe('current_cwd', function(_, new_val) schedule_re_register(new_val) end)
 
-    -- Re-register when the active session swaps to one anchored in
-    -- a different directory.
+    -- Same treatment for active-session swaps: the session's
+    -- `directory` is a more authoritative "where am I" than cwd
+    -- when the user opens opencode in a project root.
     oc_state.store.subscribe('active_session', function(_, new_val)
       local dir = new_val and new_val.directory
-      if type(dir) == 'string' and dir ~= '' then re_register_for(dir) end
+      schedule_re_register(dir)
     end)
 
     M._state.opencode_attached = true

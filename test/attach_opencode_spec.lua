@@ -140,15 +140,17 @@ describe('attach_opencode', function()
       fake_em._subs['custom.server_ready']({ url = 'http://127.0.0.1:4096' })
       -- Simulate opencode.nvim emitting on its state store. The
       -- callback signature is cb(key, new_val, old_val); we ignore
-      -- the key/old_val args.
+      -- the key/old_val args. These two fire back-to-back inside the
+      -- 200ms debounce window and collapse into a single POST.
       store_subs['current_cwd']('current_cwd', '/home/phan/b/projB', '/home/phan/b/projA')
-
-      -- And active_session changing to a session anchored elsewhere.
       store_subs['active_session'](
         'active_session',
         { id = 's1', directory = '/home/phan/b/projC' },
         nil
       )
+
+      -- Wait past the 200ms debounce so the coalesced POST fires.
+      vim.wait(500, function() return #calls >= 2 end)
 
       return {
         calls = calls,
@@ -160,24 +162,21 @@ describe('attach_opencode', function()
       }
     end)
 
-    eq(3, #out.calls)
+    -- server_ready fires immediately, then cwd + active_session
+    -- collapse into a single debounced POST.
+    eq(2, #out.calls, 'expected 2 POSTs total (server_ready + debounced)')
     -- First POST: triggered by custom.server_ready with cwd=projA.
     eq(
       true,
       out.calls[1].url:find('directory=' .. out.enc_a) ~= nil,
       'first POST should target projA, got: ' .. out.calls[1].url
     )
-    -- Second: cwd changed to projB.
+    -- Second: the debounced POST should carry the latest directory
+    -- (projC, from the active_session event that fired last).
     eq(
       true,
-      out.calls[2].url:find('directory=' .. out.enc_b) ~= nil,
-      'second POST should target projB, got: ' .. out.calls[2].url
-    )
-    -- Third: active_session switched to a session in projC.
-    eq(
-      true,
-      out.calls[3].url:find('directory=' .. out.enc_c) ~= nil,
-      'third POST should target projC, got: ' .. out.calls[3].url
+      out.calls[2].url:find('directory=' .. out.enc_c) ~= nil,
+      'debounced POST should target projC, got: ' .. out.calls[2].url
     )
   end)
 
@@ -287,4 +286,75 @@ describe('attach_opencode', function()
       eq(true, out.second_state, 'should auto-attach once EventManager is published')
     end
   )
+
+  it('debounces bursts of cwd changes into a single POST', function()
+    local out = exec_lua(function()
+      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
+        .. ';'
+        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
+        .. ';'
+        .. package.path
+
+      local fake_em = { _subs = {} }
+      fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
+
+      local store_listeners = {}
+      local store_state = { event_manager = nil, current_cwd = '/home/a' }
+      local function fire(key)
+        for _, cb in ipairs(store_listeners[key] or {}) do
+          cb(key, store_state[key], nil)
+        end
+        for _, cb in ipairs(store_listeners['*'] or {}) do
+          cb(key, store_state[key], nil)
+        end
+      end
+      local store = {}
+      function store.subscribe(key, cb)
+        store_listeners[key] = store_listeners[key] or {}
+        table.insert(store_listeners[key], cb)
+      end
+      function store.set(key, value)
+        store_state[key] = value
+        fire(key)
+      end
+      function store.get(key) return store_state[key] end
+
+      local calls = {}
+      package.loaded['opencode.state'] = {
+        event_manager = fake_em,
+        store = store,
+      }
+      local http = require('mcp.util.http_client')
+      http.post_json = function(url, body, _opts)
+        table.insert(calls, { url = url, body = body })
+        return { status = 200, body = '{"nvim":{"status":"connected"}}' }, nil
+      end
+
+      local mcp = require('mcp')
+      mcp.setup({})
+      mcp.attach_opencode({ name = 'my-nvim' })
+      store.set('event_manager', fake_em)
+
+      -- First POST: triggered by custom.server_ready.
+      fake_em._subs['custom.server_ready']({ url = 'http://127.0.0.1:4096' })
+
+      -- A burst of cwd changes (e.g. opencode.nvim's init path
+      -- calling set_current_cwd a couple of times). Within the
+      -- 200ms debounce window, only one POST should fire.
+      store.set('current_cwd', '/home/a')
+      store.set('current_cwd', '/home/b')
+      store.set('current_cwd', '/home/c')
+
+      -- Wait past the 200ms debounce.
+      vim.wait(500, function() return #calls >= 2 end)
+
+      return { calls = calls }
+    end)
+
+    eq(2, #out.calls, 'expected server_ready + one debounced cwd POST')
+    -- The single debounced POST should target the LAST cwd value.
+    -- The directory is encoded into the URL query string, so the URL
+    -- for the debounced POST should reference /home/c.
+    eq(true, out.calls[2].url:find('/home/c') ~= nil, out.calls[2].url)
+  end)
 end)
