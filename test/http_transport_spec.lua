@@ -248,6 +248,14 @@ describe('http_transport', function()
     -- The optional `: open\n\n` heartbeat should be present; tests
     -- rely on it as proof that the stream is actually live.
     eq(true, out.body:find(': open\n\n') ~= nil)
+    -- The response must not advertise a fixed length on an SSE
+    -- stream; doing so makes strict HTTP clients (reqwest, curl)
+    -- treat the response as terminated even though we keep
+    -- writing events. It also must not carry a duplicate
+    -- `Connection` header, which RFC 7230 §3.2.2 forbids and most
+    -- clients reject with a protocol error.
+    eq(nil, out.body:find('[Cc]ontent%-[Ll]ength:'))
+    eq(1, select(2, out.body:gsub('\n[Cc]onnection:', '\n')) --[[ count Connection: headers ]])
     eq(1, out.stream_count)
   end)
 

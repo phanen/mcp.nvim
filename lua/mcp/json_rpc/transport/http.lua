@@ -65,8 +65,14 @@ local function parse_request(buf)
   return { method = method, path = path, version = version, headers = headers, body = body }
 end
 
---- Format an HTTP/1.1 response. Always includes `Content-Length` and
---- `Connection: close` (we do not implement keep-alive).
+--- Format an HTTP/1.1 response. The defaults below are tuned for the
+--- one-request-per-connection model that POST / DELETE handlers use:
+--- a `Content-Length` is emitted only when the body is non-empty,
+--- and `Connection: close` is emitted only when the caller has not
+--- supplied its own `Connection` header via `extra`. The SSE handler
+--- passes `Connection: keep-alive` and an empty body, so it gets a
+--- well-formed streaming response without the duplicate-header
+--- rejection that strict HTTP clients (reqwest, curl) apply.
 ---@param status integer
 ---@param reason string
 ---@param body string?
@@ -74,16 +80,18 @@ end
 ---@return string
 local function format_response(status, reason, body, extra)
   body = body or ''
-  local parts = {
-    string.format('HTTP/1.1 %d %s\r\n', status, reason),
-    'Content-Length: ' .. tostring(#body) .. '\r\n',
-    'Connection: close\r\n',
-  }
+  local parts = { string.format('HTTP/1.1 %d %s\r\n', status, reason) }
+  -- Content-Length is omitted for an empty body. SSE uses empty-body
+  -- responses to keep the stream open, and a misleading `Content-
+  -- Length: 0` makes some clients treat the response as terminated
+  -- even though we are about to keep writing events.
+  if #body > 0 then parts[#parts + 1] = 'Content-Length: ' .. #body .. '\r\n' end
+  if not (extra and extra.Connection) then parts[#parts + 1] = 'Connection: close\r\n' end
   for k, v in pairs(extra or {}) do
-    table.insert(parts, k .. ': ' .. v .. '\r\n')
+    parts[#parts + 1] = k .. ': ' .. v .. '\r\n'
   end
-  table.insert(parts, '\r\n')
-  table.insert(parts, body)
+  parts[#parts + 1] = '\r\n'
+  parts[#parts + 1] = body
   return table.concat(parts)
 end
 
