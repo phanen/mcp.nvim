@@ -269,8 +269,8 @@ describe('nvim tools', function()
         })
       ]])
       local text = out[1].text
-      eq(true, contains(text, 'e'), text)
-      eq(true, not contains(text, 'w'), text)
+      eq(true, contains(text, ' - e'), text)
+      eq(true, not contains(text, ' - w'), text)
     end)
 
     it('strips newlines from diagnostic messages', function()
