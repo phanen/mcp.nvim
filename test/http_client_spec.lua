@@ -1,11 +1,10 @@
 -- mcp.tests.http_client_spec
 --
 -- Unit tests for `mcp.util.http_client.post_json`. The implementation
--- shells out to `curl` via `vim.fn.jobstart`, so we mock the jobstart
--- call and verify the curl argv layout. The real-curl integration is
--- covered by manual `--listen`-and-`curl` round-trips (not in the
--- test suite, because the jobstart `on_exit` path is sensitive to
--- event-loop timing under `--headless`).
+-- shells out to `curl` via `vim.system`, so we mock it and verify the
+-- curl argv layout. The real-curl integration is covered by manual
+-- `--listen`-and-`curl` round-trips (not in the test suite, because the
+-- on_exit path is sensitive to event-loop timing under `--headless`).
 
 local n = require('nvim-test.helpers')
 
@@ -26,16 +25,26 @@ describe('http_client.post_json', function()
     end)
   end)
 
-  it('builds the expected curl argv', function()
-    local r = exec_lua(function()
-      local commands = {}
-      vim.fn.jobstart = function(cmd, opts)
+  local function install_system_mock(commands)
+    exec_lua(function()
+      vim.system = function(cmd, _opts, on_exit)
         for _, a in ipairs(cmd) do
-          table.insert(commands, a)
+          -- `commands` table lives in the test runner; we capture the
+          -- argv by reaching out via a global, set below.
+          _G.__mcp_test_commands[#_G.__mcp_test_commands + 1] = a
         end
-        if opts and opts.on_exit then vim.schedule(function() opts.on_exit(nil, 0) end) end
-        return 1
+        vim.schedule(function() on_exit({ code = 0, signal = 0, stdout = '', stderr = '' }) end)
+        return { is_closing = function() return false end }
       end
+    end)
+    commands = commands or {}
+    -- Bridge the host-side table into the child nvim via a global.
+    exec_lua(function(t) _G.__mcp_test_commands = t end, commands)
+  end
+
+  it('builds the expected curl argv', function()
+    install_system_mock()
+    local r = exec_lua(function()
       local http = require('mcp.util.http_client')
       http.post_json(
         'http://127.0.0.1:4096/mcp?directory=x',
@@ -44,17 +53,18 @@ describe('http_client.post_json', function()
         function() end
       )
       vim.wait(50, function() return true end)
-      return { commands = commands }
+      return { commands = _G.__mcp_test_commands }
     end)
 
-    eq('curl', r.commands[1])
-    eq('-sS', r.commands[2])
-    eq('http://127.0.0.1:4096/mcp?directory=x', r.commands[#r.commands])
-    eq('\n%{http_code}', r.commands[#r.commands - 1])
-    eq('{"name":"nvim"}', r.commands[#r.commands - 3])
+    local commands = r.commands
+    eq('curl', commands[1])
+    eq('-sS', commands[2])
+    eq('http://127.0.0.1:4096/mcp?directory=x', commands[#commands])
+    eq('\n%{http_code}', commands[#commands - 1])
+    eq('{"name":"nvim"}', commands[#commands - 3])
     local found_post = false
-    for i, a in ipairs(r.commands) do
-      if a == '-X' and r.commands[i + 1] == 'POST' then
+    for i, a in ipairs(commands) do
+      if a == '-X' and commands[i + 1] == 'POST' then
         found_post = true
         break
       end
@@ -63,15 +73,8 @@ describe('http_client.post_json', function()
   end)
 
   it('passes custom headers through as additional -H flags', function()
+    install_system_mock()
     local r = exec_lua(function()
-      local commands = {}
-      vim.fn.jobstart = function(cmd, opts)
-        for _, a in ipairs(cmd) do
-          table.insert(commands, a)
-        end
-        if opts and opts.on_exit then vim.schedule(function() opts.on_exit(nil, 0) end) end
-        return 1
-      end
       local http = require('mcp.util.http_client')
       http.post_json(
         'http://127.0.0.1:4096/mcp',
@@ -80,7 +83,7 @@ describe('http_client.post_json', function()
         function() end
       )
       vim.wait(50, function() return true end)
-      return { commands = commands }
+      return { commands = _G.__mcp_test_commands }
     end)
 
     local found = false
@@ -94,19 +97,12 @@ describe('http_client.post_json', function()
   end)
 
   it('threads Content-Type: application/json as a default header', function()
+    install_system_mock()
     local r = exec_lua(function()
-      local commands = {}
-      vim.fn.jobstart = function(cmd, opts)
-        for _, a in ipairs(cmd) do
-          table.insert(commands, a)
-        end
-        if opts and opts.on_exit then vim.schedule(function() opts.on_exit(nil, 0) end) end
-        return 1
-      end
       local http = require('mcp.util.http_client')
       http.post_json('http://127.0.0.1:4096/mcp', '{}', { timeout_ms = 1000 }, function() end)
       vim.wait(50, function() return true end)
-      return { commands = commands }
+      return { commands = _G.__mcp_test_commands }
     end)
 
     local found = false

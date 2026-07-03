@@ -49,12 +49,9 @@ function M.post_json(url, body, opts, on_done)
   table.insert(args, '\n%{http_code}')
   table.insert(args, url)
 
-  local stdout_parts = {}
-  local stderr_text = ''
   local done = false
-  local job_id
-
   local timer = vim.uv.new_timer()
+  local obj --[[@type vim.SystemObj?]]
 
   local function finish(result, err)
     if done then return end
@@ -66,47 +63,36 @@ function M.post_json(url, body, opts, on_done)
     vim.schedule(function() on_done(result, err) end)
   end
 
-  timer:start(
-    timeout_ms,
-    0,
-    function() finish(nil, 'request timed out after ' .. tostring(timeout_ms) .. 'ms') end
-  )
-
-  job_id = vim.fn.jobstart(args, {
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, data)
-      if data then
-        for _, line in ipairs(data) do
-          stdout_parts[#stdout_parts + 1] = line
-        end
-      end
-    end,
-    on_stderr = function(_, data)
-      if data then stderr_text = stderr_text .. table.concat(data, '\n') end
-    end,
-    on_exit = function(_, code)
-      if done then return end
-      local stdout = table.concat(stdout_parts, '\n')
-      local status = stdout:match('(%d+)%s*$')
-      if not status then
-        finish(
-          nil,
-          ('curl exited with code %d: %s'):format(
-            code or -1,
-            stderr_text ~= '' and stderr_text or stdout
-          )
+  local function on_exit(completed)
+    if done then return end
+    local stdout = completed.stdout or ''
+    local status = stdout:match('(%d+)%s*$')
+    if not status then
+      local stderr = completed.stderr
+      finish(
+        nil,
+        ('curl exited with code %d: %s'):format(
+          completed.code or -1,
+          (stderr ~= nil and stderr ~= '') and stderr or stdout
         )
-        return
-      end
-      local resp_body = stdout:sub(1, -(2 + #status))
-      finish({ status = tonumber(status), body = resp_body }, nil)
-    end,
-  })
-
-  if job_id <= 0 then
-    finish(nil, 'failed to spawn curl (jobstart returned ' .. tostring(job_id) .. ')')
+      )
+      return
+    end
+    local resp_body = stdout:sub(1, -(2 + #status))
+    finish({ status = tonumber(status), body = resp_body }, nil)
   end
+
+  timer:start(timeout_ms, 0, function()
+    if obj and not obj:is_closing() then obj:kill('sigterm') end
+    finish(nil, 'request timed out after ' .. tostring(timeout_ms) .. 'ms')
+  end)
+
+  local ok, sysobj_or_err = pcall(vim.system, args, { text = true }, vim.schedule_wrap(on_exit))
+  if not ok then
+    finish(nil, 'failed to spawn curl: ' .. tostring(sysobj_or_err))
+    return
+  end
+  obj = sysobj_or_err --[[@type vim.SystemObj]]
 end
 
 return M
