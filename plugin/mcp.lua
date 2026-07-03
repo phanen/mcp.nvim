@@ -33,9 +33,8 @@ vim.api.nvim_create_user_command('McpPort', function()
 end, { desc = 'Print the mcp.nvim HTTP server URL' })
 
 vim.api.nvim_create_user_command('McpAttachOpencode', function(args)
-  local mcp = require('mcp')
   local name = args.args and args.args:match('^%S+')
-  mcp.attach_opencode({ name = name })
+  require('mcp.integrations.opencode').attach({ name = name })
 end, {
   nargs = '?',
   desc = 'Subscribe mcp.nvim to a running opencode.nvim instance',

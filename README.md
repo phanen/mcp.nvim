@@ -43,7 +43,7 @@
   opts = {},
   config = function(_, opts)
     require('opencode').setup(opts)
-    require('mcp').attach_opencode()
+    require('mcp.integrations.opencode').attach()
   end,
 }
 ```
@@ -65,9 +65,7 @@ require('mcp').register({
     type = 'object',
     properties = { message = { type = 'string' } },
   },
-  handler = function(args)
-    return { { type = 'text', text = args.message or '' } }
-  end,
+  handler = function(args) return { { type = 'text', text = args.message or '' } } end,
 })
 ```
 
@@ -83,9 +81,7 @@ return {
     properties = { name = { type = 'string' } },
     required = { 'name' },
   },
-  handler = function(args)
-    return { { type = 'text', text = 'foo: ' .. args.name } }
-  end,
+  handler = function(args) return { { type = 'text', text = 'foo: ' .. args.name } } end,
 }
 ```
 

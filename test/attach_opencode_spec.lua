@@ -1,11 +1,3 @@
--- mcp.tests.attach_opencode_spec
---
--- Tests for `mcp.attach_opencode`. We stub `mcp.util.http_client.post_json`
--- via package.loaded so the test does not have to drive the real
--- libuv + scheduler event pump of the helper. The stub fires on_done
--- synchronously so the success / failure path resolves in the same
--- call frame.
-
 local h = require('test.helpers')
 
 local eq = h.eq
@@ -21,7 +13,7 @@ describe('attach_opencode', function()
       mcp._state.server = nil
       mcp._state.http_server = nil
       mcp._state.http_port = nil
-      mcp._state.opencode_attached = false
+      require('mcp.integrations.opencode').reset()
     end)
   end)
 
@@ -30,8 +22,8 @@ describe('attach_opencode', function()
       package.loaded['opencode.state'] = nil
       local mcp = require('mcp')
       mcp.setup({})
-      local ok = pcall(mcp.attach_opencode)
-      return { ok = ok, attached = mcp._state.opencode_attached }
+      local ok = pcall(function() return require('mcp.integrations.opencode').attach() end)
+      return { ok = ok, attached = require('mcp.integrations.opencode').is_attached() }
     end)
 
     eq(true, out.ok)
@@ -40,12 +32,11 @@ describe('attach_opencode', function()
 
   it('is a no-op when opencode.nvim server URL is not set', function()
     local out = exec_lua(function()
-      -- opencode.nvim is loaded but its server has no URL yet
       package.loaded['opencode.state'] = { opencode_server = nil }
       local mcp = require('mcp')
       mcp.setup({})
-      local ok = pcall(mcp.attach_opencode)
-      return { ok = ok, attached = mcp._state.opencode_attached }
+      local ok = pcall(function() return require('mcp.integrations.opencode').attach() end)
+      return { ok = ok, attached = require('mcp.integrations.opencode').is_attached() }
     end)
 
     eq(true, out.ok)
@@ -73,19 +64,18 @@ describe('attach_opencode', function()
       end
 
       local mcp = require('mcp')
+      local oc = require('mcp.integrations.opencode')
       mcp.setup({})
-      mcp.attach_opencode({ name = 'my-nvim' })
-      local attached_before_ready = mcp._state.opencode_attached
+      oc.attach({ name = 'my-nvim' })
+      local attached_before_ready = oc.is_attached()
       local calls_before_ready = #calls
 
-      -- Simulate opencode.nvim firing custom.server_ready with the
-      -- real URL. The deferred callback should now POST.
       fake_em._subs['custom.server_ready']({ url = 'http://127.0.0.1:4096' })
 
       return {
         calls = calls,
         attached_before_ready = attached_before_ready,
-        attached_after_ready = mcp._state.opencode_attached,
+        attached_after_ready = oc.is_attached(),
         calls_before_ready = calls_before_ready,
       }
     end)
@@ -116,12 +106,13 @@ describe('attach_opencode', function()
       end
 
       local mcp = require('mcp')
+      local oc = require('mcp.integrations.opencode')
       mcp.setup({})
-      mcp.attach_opencode({ name = 'my-nvim' })
+      oc.attach({ name = 'my-nvim' })
 
       return {
         calls = calls,
-        attached = mcp._state.opencode_attached,
+        attached = oc.is_attached(),
         expected_dir = vim.uri_encode('/home/phan/b/proj', 'rfc3986'),
       }
     end)
@@ -162,13 +153,14 @@ describe('attach_opencode', function()
       end
 
       local mcp = require('mcp')
+      local oc = require('mcp.integrations.opencode')
       mcp.setup({})
-      mcp.attach_opencode({ name = 'my-nvim' })
-      mcp.attach_opencode({ name = 'my-nvim' })
+      oc.attach({ name = 'my-nvim' })
+      oc.attach({ name = 'my-nvim' })
 
       return {
         calls = calls,
-        attached = mcp._state.opencode_attached,
+        attached = oc.is_attached(),
       }
     end)
 
@@ -191,21 +183,21 @@ describe('attach_opencode', function()
       end
 
       local mcp = require('mcp')
+      local oc = require('mcp.integrations.opencode')
       mcp.setup({})
-      mcp.attach_opencode({ name = 'my-nvim' })
-      local attached_after_failure = mcp._state.opencode_attached
+      oc.attach({ name = 'my-nvim' })
+      local attached_after_failure = oc.is_attached()
 
-      -- Now flip the stub to succeed; the next call must retry.
       http.post_json = function(url, body, _opts, on_done)
         table.insert(calls, { url = url, body = body })
         on_done({ status = 200, body = '{"nvim":{"status":"connected"}}' }, nil)
       end
-      mcp.attach_opencode({ name = 'my-nvim' })
+      oc.attach({ name = 'my-nvim' })
 
       return {
         calls = calls,
         attached_after_failure = attached_after_failure,
-        attached_after_retry = mcp._state.opencode_attached,
+        attached_after_retry = oc.is_attached(),
       }
     end)
 

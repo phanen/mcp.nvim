@@ -17,7 +17,6 @@ M.log = log
 ---@field registry? mcp.ToolRegistry
 ---@field http_server? mcp.json_rpc.transport.http.Server
 ---@field http_port? integer
-
 ---@type mcp.State
 M._state = {
   setup_done = false,
@@ -75,7 +74,6 @@ function M.setup(opts)
 
   if opts.instructions then mcp_server.instructions = opts.instructions end
 
-  M._state.opencode_attached = false
   M._state.setup_done = true
   M._state.opts = opts
   M._state.registry = registry
@@ -178,121 +176,6 @@ end
 
 ---@return integer?
 function M.http_port() return M._state.http_port end
-
----@class mcp.OpencodeRegisterOpts
----@field name? string  mcp server name to register as (default `nvim`)
----@field timeout_ms? integer  HTTP request timeout (default 3000)
----@field headers? table<string, string>  extra headers (e.g. opencode auth tokens)
----@field directory? string  workspace directory the registration is associated with (default `vim.fn.getcwd()`)
-
----@param opencode_url string  base URL of the running opencode server (e.g. http://127.0.0.1:4096)
----@param opts? mcp.OpencodeRegisterOpts
----@param on_done fun(result: { ok: boolean, status?: integer, body?: any, error?: string })
-local function opencode_register(opencode_url, opts, on_done)
-  opts = opts or {}
-  local name = opts.name or 'nvim'
-  local our_url = M.url()
-  if not our_url then
-    on_done({ ok = false, error = 'mcp HTTP server is not running; call setup() first' })
-    return
-  end
-
-  local directory = opts.directory or vim.fn.getcwd()
-
-  local body = vim.json.encode({
-    name = name,
-    config = {
-      type = 'remote',
-      url = our_url,
-    },
-  })
-
-  local endpoint = (opencode_url:gsub('/$', ''))
-    .. '/mcp?directory='
-    .. vim.uri_encode(directory, 'rfc3986')
-
-  require('mcp.util.http_client').post_json(endpoint, body, {
-    timeout_ms = opts.timeout_ms or 3000,
-    headers = opts.headers or {},
-  }, function(result, err)
-    if err then
-      on_done({ ok = false, error = err })
-      return
-    end
-
-    if result.status < 200 or result.status >= 300 then
-      on_done({
-        ok = false,
-        status = result.status,
-        error = ('opencode rejected the registration (HTTP %d): %s'):format(
-          result.status,
-          result.body
-        ),
-      })
-      return
-    end
-
-    local ok, decoded = pcall(vim.json.decode, result.body)
-    if ok then
-      on_done({ ok = true, status = result.status, body = decoded })
-    else
-      on_done({
-        ok = true,
-        status = result.status,
-        body = result.body,
-        warning = 'response was not valid JSON',
-      })
-    end
-  end)
-end
-
---- Idempotent. POSTs to the running opencode.nvim server, announcing
---- this Neovim instance for the current workspace. If opencode.nvim
---- has not finished connecting to its server yet, waits for the
---- `custom.server_ready` event from the EventManager before POSTing.
---- Failures are not sticky: re-call to retry. cwd / active_session
---- changes are NOT tracked automatically - re-call when the workspace
---- moves.
----@param opts? { name?: string }
-function M.attach_opencode(opts)
-  if M._state.opencode_attached then return end
-  local ok, oc_state = pcall(require, 'opencode.state')
-  if not ok then
-    log.info('opencode.nvim is not installed; skipping attach')
-    return
-  end
-  local function do_attach(url)
-    local directory = oc_state.current_cwd or vim.fn.getcwd()
-    opencode_register(url, { name = opts and opts.name, directory = directory }, function(result)
-      if result.ok then
-        log.info('Registered with opencode at', url, '(workspace:', directory, ')')
-        M._state.opencode_attached = true
-      else
-        log.warn(
-          'Failed to register with opencode:',
-          result.error or ('status ' .. tostring(result.status))
-        )
-      end
-    end)
-  end
-  local url = oc_state.opencode_server and oc_state.opencode_server.url
-  if url then
-    do_attach(url)
-    return
-  end
-  local em = oc_state.event_manager
-  if not em then
-    log.info('opencode.nvim server is not running; skipping attach')
-    return
-  end
-  log.info('opencode.nvim server not ready yet; deferring attach until it is')
-  local on_ready = function(data)
-    em:unsubscribe('custom.server_ready', on_ready)
-    if M._state.opencode_attached then return end
-    do_attach(data.url)
-  end
-  em:subscribe('custom.server_ready', on_ready)
-end
 
 ---@return string?
 function M.url()
