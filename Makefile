@@ -147,9 +147,6 @@ NVIM_TEST_RUNTIME=$(XDG_DATA_HOME)/nvim-test/nvim-test-$(NVIM_TEST_VERSION)/shar
 $(NVIM_TEST_RUNTIME): $(NVIM_TEST)
 	$^/bin/nvim-test --init
 
-$(NVIM_TEST_RUNTIME): $(NVIM_TEST)
-	$^/bin/nvim-test --init
-
 .PHONY: emmylua-check
 emmylua-check: $(EMMYLUA_BIN) $(NVIM_TEST_RUNTIME)
 	VIMRUNTIME=$(NVIM_TEST_RUNTIME) \
