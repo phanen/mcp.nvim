@@ -192,11 +192,6 @@ describe('attach_opencode', function()
 
   it('is a no-op when opencode.nvim is not installed', function()
     local out = exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
       package.loaded['opencode.state'] = nil
       local mcp = require('mcp')
       mcp.setup({})
@@ -210,11 +205,6 @@ describe('attach_opencode', function()
 
   it('reports a warning when opencode.nvim is loaded but the EventManager is not ready', function()
     local out = exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
       -- opencode.state without an event_manager field
       package.loaded['opencode.state'] = {}
       local mcp = require('mcp')
@@ -231,12 +221,6 @@ describe('attach_opencode', function()
     'defers until the opencode.nvim EventManager becomes available and then completes the wire',
     function()
       local out = exec_lua(function()
-        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-          .. ';'
-          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-          .. ';'
-          .. package.path
-
         local fake_em = { _subs = {}, _calls = {} }
         fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
 
@@ -301,12 +285,6 @@ describe('attach_opencode', function()
 
   it('debounces bursts of cwd changes into a single POST', function()
     local out = exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
-
       local fake_em = { _subs = {} }
       fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
 
@@ -376,12 +354,6 @@ describe('attach_opencode', function()
     'POSTs directly when opencode.nvim is already connected (no custom.server_ready fires again)',
     function()
       local out = exec_lua(function()
-        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-          .. ';'
-          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-          .. ';'
-          .. package.path
-
         local fake_em = { _subs = {}, _calls = 0 }
         fake_em.subscribe = function(self, event, cb)
           fake_em._subs[event] = cb
@@ -452,37 +424,9 @@ describe('attach_opencode', function()
         'expected exactly one POST (the direct read of state.opencode_server.url), got calls='
           .. vim.inspect(out.calls)
       )
-      -- The URL should be the opencode server's URL, not the mcp server's
-      -- (we POST TO opencode, our config is in the body).
-      print('  [debug] calls[1].url=' .. (out.calls[1] and out.calls[1].url or 'nil'))
-      print(
-        '  [debug] find result='
-          .. tostring(
-            out.calls[1] and out.calls[1].url and out.calls[1].url:find('127.0.0.1:4096', 1, true)
-          )
-      )
-      print(
-        '  [debug] find ~= nil = '
-          .. tostring(
-            out.calls[1]
-              and out.calls[1].url
-              and (out.calls[1].url:find('127.0.0.1:4096', 1, true) ~= nil)
-          )
-      )
-      print(
-        '  [outer debug] out.calls[1].url = '
-          .. tostring(out.calls[1] and out.calls[1].url or 'nil')
-      )
-      print(
-        '  [outer debug] find result = '
-          .. tostring(
-            out.calls[1] and out.calls[1].url and out.calls[1].url:find('127.0.0.1:4096', 1, true)
-          )
-      )
       local v = out.calls[1]
         and out.calls[1].url
         and (out.calls[1].url:find('127.0.0.1:4096', 1, true) ~= nil)
-      print('  [outer debug] v = ' .. tostring(v) .. ' type=' .. type(v))
       eq(
         true,
         v,
