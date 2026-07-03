@@ -57,6 +57,7 @@ function M.setup(opts)
     registry:register(def)
   end
 
+  ---@type mcp.Dispatcher
   local stub_conn = {
     on_request = function() end,
     on_notify = function() end,
@@ -79,18 +80,23 @@ function M.setup(opts)
   M._state.registry = registry
   M._state.server = mcp_server
 
+  assert(opts.http, 'http opts missing') -- narrowed by line 37 default
   if opts.http.enabled then M._start_http() end
 end
 
 --- Idempotent.
 function M._start_http()
   local opts = M._state.opts
+  local http_opts = opts.http
+  assert(http_opts, 'setup() did not initialise http opts')
   if M._state.http_server then return M._state.http_port end
   local http = require('mcp.json_rpc.transport.http')
   local mcp_server = M._state.server
-  local server, port = http.bind(opts.http.host, opts.http.port, {
-    endpoint = opts.http.endpoint,
-    allowed_origins = opts.http.allowed_origins or { 'null' },
+  local host = assert(http_opts.host, 'setup() did not set http.host')
+  local port = assert(http_opts.port, 'setup() did not set http.port')
+  local server, actual_port = http.bind(host, port, {
+    endpoint = http_opts.endpoint,
+    allowed_origins = http_opts.allowed_origins or { 'null' },
     on_request = function(method, params) return mcp_server:_dispatch(method, params) end,
     on_notify = function(method, params) mcp_server:_on_notify(method, params) end,
     -- SSE liveness is the only session-end signal we have, lacking
@@ -98,9 +104,9 @@ function M._start_http()
     on_sse_closed = function() mcp_server:_reset_for_new_session() end,
   })
   M._state.http_server = server
-  M._state.http_port = port
+  M._state.http_port = actual_port
   http_broadcaster = server
-  return port
+  return actual_port
 end
 
 function M.stop()

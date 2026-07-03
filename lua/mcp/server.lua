@@ -6,6 +6,12 @@ local SERVER_INFO = {
   version = '0.0.1',
 }
 
+---@alias mcp.Server.State
+---| 'Created'
+---| 'Negotiating'
+---| 'Ready'
+---| 'Closed'
+
 local State = {
   Created = 'Created',
   Negotiating = 'Negotiating',
@@ -15,8 +21,15 @@ local State = {
 
 local M = {}
 
+---@class mcp.Dispatcher
+---@field on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
+---@field on_notify fun(method: string, params?: table)
+---@field on_sse_closed? fun()
+---@field notify fun(self: mcp.Dispatcher, method: string, params?: table)
+---@field is_closing fun(self: mcp.Dispatcher): boolean
+
 ---@class mcp.Server
----@field connection mcp.json_rpc.Connection
+---@field connection mcp.Dispatcher
 ---@field registry mcp.ToolRegistry
 ---@field state mcp.Server.State
 ---@field client_info table?
@@ -25,7 +38,7 @@ local M = {}
 local Server = {}
 Server.__index = Server
 
----@param connection mcp.json_rpc.Connection
+---@param connection mcp.Dispatcher
 ---@param registry mcp.ToolRegistry
 ---@param opts? { server_info?: table, instructions?: string, capabilities?: table }
 ---@return mcp.Server
@@ -44,14 +57,12 @@ function M.new(connection, registry, opts)
   return self
 end
 
----@param self mcp.Server
 function Server:_bind_dispatchers()
   self.connection.on_request = function(method, params) return self:_dispatch(method, params) end
   self.connection.on_notify = function(method, params) self:_on_notify(method, params) end
   self.connection.on_sse_closed = function() self:_reset_for_new_session() end
 end
 
----@param self mcp.Server
 ---@param method string
 ---@param params table?
 ---@return any result
@@ -71,7 +82,6 @@ function Server:_dispatch(method, params)
   return nil, json_rpc.errors.method_not_found(method)
 end
 
----@param self mcp.Server
 function Server:_reset_for_new_session()
   if self.state == State.Closed then return end
   self.state = State.Created
@@ -79,9 +89,8 @@ function Server:_reset_for_new_session()
   self.client_capabilities = nil
 end
 
----@param self mcp.Server
 ---@param method string
----@param params table?
+---@param _params table?
 function Server:_on_notify(method, _params)
   if method == 'notifications/initialized' then
     if self.state == State.Negotiating then
@@ -96,8 +105,9 @@ function Server:_on_notify(method, _params)
   end
 end
 
----@param self mcp.Server
 ---@param params table?
+---@return table? result
+---@return mcp.json_rpc.Error?
 function Server:_handle_initialize(params)
   if self.state ~= State.Created then
     return nil, json_rpc.make_error(-32603, 'initialize called in state ' .. tostring(self.state))
@@ -120,8 +130,9 @@ function Server:_handle_initialize(params)
     nil
 end
 
----@param self mcp.Server
----@param params table?
+---@param _params table?
+---@return table? result
+---@return mcp.json_rpc.Error?
 function Server:_handle_tools_list(_params)
   local tools = self.registry:list()
   local out = {}
@@ -137,7 +148,6 @@ function Server:_handle_tools_list(_params)
   return { tools = out }, nil
 end
 
----@param self mcp.Server
 ---@param params table?
 function Server:_handle_tools_call(params)
   if type(params) ~= 'table' or type(params.name) ~= 'string' then

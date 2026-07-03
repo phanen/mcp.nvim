@@ -8,13 +8,11 @@ M.check = function()
     return
   end
   vim.health.ok('setup() called')
+  local http_opts = mcp._state.opts.http
+  assert(http_opts, 'setup() did not initialise http opts')
   if mcp._state.http_server then
     vim.health.ok(
-      string.format(
-        'HTTP server listening on %s:%d',
-        mcp._state.opts.http.host,
-        mcp._state.http_port
-      )
+      string.format('HTTP server listening on %s:%d', http_opts.host, mcp._state.http_port)
     )
   else
     vim.health.info('HTTP server not started')

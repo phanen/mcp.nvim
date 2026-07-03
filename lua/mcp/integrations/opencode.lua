@@ -42,8 +42,8 @@ function M.register(opencode_url, opts, on_done)
     timeout_ms = opts.timeout_ms or 3000,
     headers = opts.headers or {},
   }, function(result, err)
-    if err then
-      on_done({ ok = false, error = err })
+    if err or not result then
+      on_done({ ok = false, error = err or 'http_client returned no result' })
       return
     end
 

@@ -37,7 +37,7 @@ function M.post_json(url, body, opts, on_done)
   table.insert(args, url)
 
   local done = false
-  local timer = vim.uv.new_timer()
+  local timer = assert(vim.uv.new_timer())
   local obj --[[@type vim.SystemObj?]]
 
   local function finish(result, err)
@@ -79,7 +79,7 @@ function M.post_json(url, body, opts, on_done)
     finish(nil, 'failed to spawn curl: ' .. tostring(sysobj_or_err))
     return
   end
-  obj = sysobj_or_err --[[@type vim.SystemObj]]
+  obj = sysobj_or_err --[[@as vim.SystemObj]]
 end
 
 return M

@@ -1,7 +1,7 @@
 local M = {}
 
 ---@class mcp.json_rpc.transport.tcp.Server
----@field handle uv_tcp_t
+---@field handle uv.uv_tcp_t
 ---@field host string
 ---@field port integer
 local Server = {}
@@ -11,7 +11,7 @@ Server.__index = Server
 ---@param port integer
 ---@return mcp.json_rpc.transport.tcp.Server
 function M.bind(host, port)
-  local handle = vim.uv.new_tcp()
+  local handle = assert(vim.uv.new_tcp())
   handle:bind(host, port)
   return setmetatable({ handle = handle, host = host, port = port }, Server)
 end
@@ -22,37 +22,23 @@ function Server:listen()
   local connections = {}
   handle:listen(128, function(err)
     if err then return end
-    local client = vim.uv.new_tcp()
+    local client = assert(vim.uv.new_tcp())
     local ok = pcall(function() handle:accept(client) end)
     if not ok then return end
+    -- Keep `client` reachable so the accepted handle stays alive until
+    -- the peer closes it; libuv has no other reference once this
+    -- callback returns.
     table.insert(connections, client)
-    local outbound = {}
-    local transport = {
-      listen = function(_, on_read, on_exit)
-        client:read_start(vim.schedule_wrap(function(read_err, data) on_read(read_err, data) end))
-        client:on('end', function() on_exit(0, 0) end)
-      end,
-      is_closing = function(_) return client:is_closing() end,
-      terminate = function(_)
-        if not client:is_closing() then client:close() end
-      end,
-      write = function(_, msg)
-        if client:is_closing() then return false end
-        local write_ok = pcall(function() client:write(msg) end)
-        return write_ok
-      end,
-      outbound = outbound,
-    }
-    transport.handle = client
-    return transport
   end)
-  return handle:getsockname().port
+  local sockname = assert(handle:getsockname(), 'uv tcp socket has no bound address')
+  return sockname.port
 end
 
 M.Server = Server
 
 ---@class mcp.json_rpc.transport.tcp.Client
----@field handle uv_tcp_t
+---@field handle uv.uv_tcp_t
+---@field private _on_exit fun(code: integer, signal: integer)?
 local Client = {}
 Client.__index = Client
 
@@ -60,7 +46,7 @@ Client.__index = Client
 ---@param port integer
 ---@return mcp.json_rpc.transport.tcp.Client
 function M.connect(host, port, on_connect)
-  local handle = vim.uv.new_tcp()
+  local handle = assert(vim.uv.new_tcp())
   local client = setmetatable({ handle = handle }, Client)
   handle:connect(
     host,
@@ -89,7 +75,7 @@ function Client:write(msg)
 end
 
 ---@return boolean
-function Client:is_closing() return self.handle:is_closing() end
+function Client:is_closing() return self.handle:is_closing() == true end
 
 function Client:terminate()
   if not self.handle:is_closing() then self.handle:close() end

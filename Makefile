@@ -152,4 +152,5 @@ emmylua-check: $(EMMYLUA_BIN) $(NVIM_TEST_RUNTIME)
 	VIMRUNTIME=$(NVIM_TEST_RUNTIME) \
 		$(EMMYLUA_BIN) . \
 		--ignore 'test/**/*' \
-		--ignore gen_help.lua
+		--ignore gen_help.lua \
+		--warnings-as-errors

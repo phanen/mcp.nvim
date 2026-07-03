@@ -37,23 +37,21 @@ for k, v in pairs(client_errors) do
 end
 
 ---@nodoc
----@type table<string,integer>
+---@type table<string,integer> | table<integer,string>
 M.error_code = vim.deepcopy(error_code)
 for k, v in pairs(error_code) do
   M.error_code[v] = k
 end
 
 ---@class mcp.json_rpc.log
----@field info fun(self, msg: string, ctx?: table)
----@field debug fun(self, msg: string, ctx?: table)
----@field warn fun(self, msg: string, ctx?: table)
----@field error fun(self, msg: string, ctx?: table)
+---@field info fun(msg: string, ctx?: table)
+---@field debug fun(msg: string, ctx?: table)
+---@field warn fun(msg: string, ctx?: table)
+---@field error fun(msg: string, ctx?: table)
 local default_log = {}
-default_log.__index = default_log
-function default_log:info() end
-function default_log:debug() end
-function default_log:warn() end
-function default_log:error() end
+function default_log.debug() end
+function default_log.warn() end
+function default_log.error() end
 
 local function make_log()
   local enabled = vim.env.MCP_DEBUG and vim.env.MCP_DEBUG ~= ''
@@ -78,6 +76,28 @@ local function make_log()
     end,
   }, { __index = default_log })
 end
+
+---@class mcp.json_rpc.Error
+---@field code integer
+---@field message string
+---@field data? any
+
+---@alias mcp.json_rpc.Request.Id integer | string
+
+---@class mcp.json_rpc.Message
+---@field jsonrpc string
+---@field id? mcp.json_rpc.Request.Id
+---@field method? string
+---@field params? table
+---@field result? any
+---@field error? mcp.json_rpc.Error
+
+---@class mcp.json_rpc.Transport
+---@field on_error? fun(kind: string, err: any)
+---@field listen fun(self: mcp.json_rpc.Transport, on_read: fun(err: string?, data: string?), on_exit: fun(code: integer, signal: integer))
+---@field write fun(self: mcp.json_rpc.Transport, payload: string): boolean
+---@field is_closing fun(self: mcp.json_rpc.Transport): boolean
+---@field terminate fun(self: mcp.json_rpc.Transport)
 
 ---@class mcp.json_rpc.Dispatchers
 --- Invoked on notifications received from the other endpoint.
@@ -114,6 +134,11 @@ end
 ---@field private message_stream mcp.json_rpc.message_stream
 ---@field private dispatchers mcp.json_rpc.Dispatchers
 ---@field private log mcp.json_rpc.log
+---@field public on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
+---@field public on_notify fun(method: string, params?: table)
+---@field public on_exit fun(code: integer, signal: integer)
+---@field public on_error fun(code: integer, err: any)
+---@field public on_sse_closed? fun()
 local Connection = {}
 Connection.__index = Connection
 
@@ -241,8 +266,8 @@ function Connection:on_read(err, data)
 end
 
 function Connection:on_exit(code, signal)
-  for _, callback in pairs(self.request_callbacks) do
-    if callback then callback({ code = -1, message = 'Connection terminated' }, nil) end
+  for request_id, callback in pairs(self.request_callbacks) do
+    if callback then callback({ code = -1, message = 'Connection terminated' }, nil, request_id) end
   end
   self.request_callbacks = {}
   self.dispatchers.on_exit(code, signal)

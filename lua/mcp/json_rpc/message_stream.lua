@@ -1,14 +1,13 @@
 ---@class mcp.json_rpc.message_stream
 ---@field private strbuf string[]
 ---@field private byte_len integer
----@field private decode fun(strbuf: string[]): string?, integer?  # returns body, consume_n
+---@field private decode fun(strbuf: string[], byte_len: integer): string?, integer?
 ---@field private on_read fun(err: string?, data: string?)
 ---@field private on_error fun(err: any)
 ---@field encode fun(msg: string): string
 local MessageStream = {}
 MessageStream.__index = MessageStream
-
----@param decode fun(strbuf: string[]): string?, integer?
+---@param decode fun(strbuf: string[], byte_len: integer): string?, integer?
 ---@param encode fun(msg: string): string
 ---@param on_read fun(err: string?, data: string?)
 ---@param on_error fun(err: any)

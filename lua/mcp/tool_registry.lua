@@ -9,12 +9,12 @@ local M = {}
 
 ---@class mcp.ToolRegistry
 ---@field private tools table<string, mcp.ToolDef>
----@field private connection mcp.json_rpc.Connection?
+---@field private connection mcp.Dispatcher?
 ---@field private version integer
 local ToolRegistry = {}
 ToolRegistry.__index = ToolRegistry
 
----@param connection? mcp.json_rpc.Connection
+---@param connection? mcp.Dispatcher
 ---@return mcp.ToolRegistry
 function M.new(connection)
   return setmetatable({
@@ -24,12 +24,9 @@ function M.new(connection)
   }, ToolRegistry)
 end
 
----@param registry mcp.ToolRegistry
----@param connection? mcp.json_rpc.Connection
+---@param connection? mcp.Dispatcher
 function ToolRegistry:set_connection(connection) self.connection = connection end
 
----@param registry mcp.ToolRegistry
----@param def mcp.ToolDef
 function ToolRegistry:register(def)
   assert(type(def.name) == 'string' and #def.name > 0, 'tool name must be a non-empty string')
   assert(type(def.description) == 'string', 'tool description must be a string')
@@ -42,7 +39,6 @@ function ToolRegistry:register(def)
   end
 end
 
----@param registry mcp.ToolRegistry
 ---@param name string
 ---@return boolean removed
 function ToolRegistry:unregister(name)
@@ -57,7 +53,6 @@ function ToolRegistry:unregister(name)
   return false
 end
 
----@param registry mcp.ToolRegistry
 ---@return mcp.ToolDef[]
 function ToolRegistry:list()
   local out = {}
@@ -68,13 +63,8 @@ function ToolRegistry:list()
   return out
 end
 
----@param registry mcp.ToolRegistry
 ---@param name string
 ---@return mcp.ToolDef?
 function ToolRegistry:get(name) return self.tools[name] end
-
----@param registry mcp.ToolRegistry
----@return integer
-function ToolRegistry:version() return self.version end
 
 return M

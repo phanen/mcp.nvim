@@ -33,10 +33,10 @@ local function join_until(strbuf, limit_index)
 end
 
 ---@param strbuf string[]
----@param byte_len integer
+---@param _byte_len integer unused; kept for shape parity with content_length_decode
 ---@return string? body
 ---@return integer? consumed
-function M.newline_decode(strbuf, byte_len)
+function M.newline_decode(strbuf, _byte_len)
   local nl = find_newline(strbuf)
   if not nl then return nil end
   return join_until(strbuf, nl), nl
@@ -55,11 +55,13 @@ local function find_content_length_header_end(strbuf)
 end
 
 ---@param strbuf string[]
----@return integer?
+---@return integer? parsed Content-Length, or nil if missing
 local function parse_content_length(strbuf)
   local header = table.concat(strbuf):sub(1, 4096)
   local cl = header:match('[Cc]ontent%-[Ll]ength:%s*(%d+)')
-  return tonumber(cl)
+  if not cl then return nil end
+  local n = tonumber(cl) ---@cast n integer?
+  return n
 end
 
 ---@param strbuf string[]
@@ -97,10 +99,10 @@ function M.sse_encode(event_id, data)
 end
 
 ---@param strbuf string[]
----@param byte_len integer
+---@param _byte_len integer unused; kept for shape parity with content_length_decode
 ---@return string? body
 ---@return integer? consumed
-function M.sse_decode(strbuf, byte_len)
+function M.sse_decode(strbuf, _byte_len)
   local s = table.concat(strbuf)
   local term_start, term_end = s:find('\r\n\r\n', 1, true)
   if not term_start then

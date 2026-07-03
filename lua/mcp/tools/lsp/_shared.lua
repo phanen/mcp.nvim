@@ -48,7 +48,8 @@ function M.format_symbol(sym)
   local kind = sym.kind
   local kind_name = 'Symbol'
   if vim.lsp and vim.lsp.protocol and vim.lsp.protocol.SymbolKind then
-    kind_name = vim.lsp.protocol.SymbolKind[kind] or kind_name
+    local name = vim.lsp.protocol.SymbolKind[kind]
+    if type(name) == 'string' then kind_name = name end
   end
   local loc = sym.location or sym.range
   if sym.range and not sym.location then loc = { range = sym.range, uri = sym.uri } end
@@ -77,7 +78,7 @@ function M.ensure_buffer(path)
 end
 
 ---@param bufnr integer
----@param method string
+---@param method vim.lsp.protocol.Method.ClientToServer.Request
 ---@param params table
 ---@param timeout_ms? integer default 2000
 ---@return table[] results
@@ -91,8 +92,9 @@ function M.buf_request_sync(bufnr, method, params, timeout_ms)
   local results = {}
   local errors = {}
   for _, resp in pairs(responses) do
-    if resp.err then
-      table.insert(errors, tostring(resp.err.message or resp.err))
+    local err = resp.error
+    if err then
+      table.insert(errors, tostring(err.message or err))
     elseif resp.result ~= nil then
       table.insert(results, resp.result)
     end

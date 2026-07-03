@@ -2,6 +2,13 @@ local framing = require('mcp.json_rpc.transport.framing')
 
 local M = {}
 
+---@class mcp.json_rpc.transport.http.BindOpts
+---@field endpoint? string
+---@field allowed_origins? string[]
+---@field on_request? fun(method: string, params?: table): any?, mcp.json_rpc.Error?
+---@field on_notify? fun(method: string, params?: table)
+---@field on_sse_closed? fun()
+
 ---@param buf string
 ---@return table?
 local function parse_request(buf)
@@ -22,7 +29,7 @@ local function parse_request(buf)
     if k then headers[k:lower()] = v end
   end
 
-  local cl = tonumber(headers['content-length']) or 0
+  local cl = tonumber(headers['content-length']) or 0 ---@cast cl integer
   if #body < cl then return nil end
   body = body:sub(1, cl)
 
@@ -50,11 +57,11 @@ local function format_response(status, reason, body, extra)
 end
 
 ---@class mcp.json_rpc.transport.http.SseStream
----@field private client uv_tcp_t
+---@field private client uv.uv_tcp_t
 local SseStream = {}
 SseStream.__index = SseStream
 
----@param client uv_tcp_t
+---@param client uv.uv_tcp_t
 ---@return mcp.json_rpc.transport.http.SseStream
 function SseStream.new(client) return setmetatable({ client = client }, SseStream) end
 
@@ -78,7 +85,7 @@ function SseStream:close()
 end
 
 ---@class mcp.json_rpc.transport.http.Server
----@field private handle uv_tcp_t
+---@field private handle uv.uv_tcp_t
 ---@field private host string
 ---@field private port integer
 ---@field private endpoint string
@@ -93,7 +100,7 @@ local HttpServer = {}
 HttpServer.__index = HttpServer
 
 ---@return boolean
-function HttpServer:is_closing() return self.handle:is_closing() end
+function HttpServer:is_closing() return self.handle:is_closing() == true end
 
 function HttpServer:terminate()
   for stream, _ in pairs(self.streams) do
@@ -107,7 +114,7 @@ function HttpServer:terminate()
   if not self.handle:is_closing() then self.handle:close() end
 end
 
----@param client uv_tcp_t
+---@param client uv.uv_tcp_t
 ---@return mcp.json_rpc.transport.http.SseStream?
 function HttpServer:_open_sse(client)
   local response = format_response(200, 'OK', '', {
@@ -152,7 +159,7 @@ function HttpServer:broadcast_event(payload)
   end
 end
 
----@param client uv_tcp_t
+---@param client uv.uv_tcp_t
 function HttpServer:_drop_client(client)
   local was_stream = false
   for stream, _ in pairs(self.streams) do
@@ -302,7 +309,7 @@ function HttpServer:_on_data(client, data)
   -- capture them in an upvalue array. Index 1 is reserved for the
   -- error string.
   local results = { nil, nil, nil }
-  local ok = xpcall(function()
+  ok = xpcall(function()
     local r1, r2 = self.on_request(msg.method, msg.params)
     results[2] = r1
     results[3] = r2
@@ -340,13 +347,13 @@ end
 
 ---@param host string
 ---@param port integer
----@param opts? { endpoint?: string, allowed_origins?: string[], on_request?: fun(method, params), on_notify?: fun(method, params), on_sse_closed?: fun() }
+---@param opts? mcp.json_rpc.transport.http.BindOpts
 ---@return mcp.json_rpc.transport.http.Server, integer actual_port
 function M.bind(host, port, opts)
   opts = opts or {}
-  local handle = vim.uv.new_tcp()
+  local handle = assert(vim.uv.new_tcp())
   handle:bind(host, port)
-  local actual_port = handle:getsockname().port
+  local actual_port = assert(handle:getsockname()).port
 
   local allowed = {}
   for _, o in ipairs(opts.allowed_origins or {}) do
@@ -374,7 +381,7 @@ function M.bind(host, port, opts)
     128,
     vim.schedule_wrap(function(err)
       if err then return end
-      local client = vim.uv.new_tcp()
+      local client = assert(vim.uv.new_tcp())
       local ok = pcall(function() handle:accept(client) end)
       if not ok then return end
       self.clients[client] = true
