@@ -246,28 +246,27 @@ local function opencode_register(opencode_url, opts, on_done)
   end)
 end
 
---- Idempotent. Subscribes to opencode.nvim's state store so the
---- registration is re-issued on `current_cwd` / `active_session`
---- changes without the user writing any autocmd.
+--- Idempotent. POSTs to the running opencode.nvim server, announcing
+--- this Neovim instance for the current workspace. If opencode.nvim
+--- has not finished connecting to its server yet, waits for the
+--- `custom.server_ready` event from the EventManager before POSTing.
+--- Failures are not sticky: re-call to retry. cwd / active_session
+--- changes are NOT tracked automatically - re-call when the workspace
+--- moves.
 ---@param opts? { name?: string }
 function M.attach_opencode(opts)
-  opts = opts or {}
   if M._state.opencode_attached then return end
   local ok, oc_state = pcall(require, 'opencode.state')
   if not ok then
     log.info('opencode.nvim is not installed; skipping attach')
     return
   end
-
-  local last_registered_directory
-  local last_server_url
-  local debounce_timer
-
-  local function do_register(url, directory)
-    last_registered_directory = directory
-    opencode_register(url, { name = opts.name, directory = directory }, function(result)
+  local function do_attach(url)
+    local directory = oc_state.current_cwd or vim.fn.getcwd()
+    opencode_register(url, { name = opts and opts.name, directory = directory }, function(result)
       if result.ok then
         log.info('Registered with opencode at', url, '(workspace:', directory, ')')
+        M._state.opencode_attached = true
       else
         log.warn(
           'Failed to register with opencode:',
@@ -276,65 +275,23 @@ function M.attach_opencode(opts)
       end
     end)
   end
-
-  local function schedule_re_register(directory)
-    if not last_server_url or type(directory) ~= 'string' or directory == '' then return end
-    if directory == last_registered_directory then return end
-    if debounce_timer and not debounce_timer:is_closing() then
-      debounce_timer:stop()
-      debounce_timer:close()
-    end
-    debounce_timer = vim.uv.new_timer()
-    debounce_timer:start(200, 0, function()
-      if debounce_timer and not debounce_timer:is_closing() then
-        debounce_timer:stop()
-        debounce_timer:close()
-      end
-      debounce_timer = nil
-      if directory == last_registered_directory then return end
-      do_register(last_server_url, directory)
-    end)
-  end
-
-  local function wire(event_manager, known_url)
-    if known_url then
-      last_server_url = known_url
-      do_register(known_url, oc_state.current_cwd or vim.fn.getcwd())
-    else
-      event_manager:subscribe('custom.server_ready', function(data)
-        last_server_url = data.url
-        do_register(data.url, oc_state.current_cwd or vim.fn.getcwd())
-      end)
-    end
-
-    oc_state.store.subscribe('current_cwd', function(_, new_val) schedule_re_register(new_val) end)
-
-    oc_state.store.subscribe(
-      'active_session',
-      function(_, new_val) schedule_re_register(new_val and new_val.directory) end
-    )
-  end
-
-  local known_url = oc_state.opencode_server and oc_state.opencode_server.url
-
-  if oc_state.event_manager then
-    wire(oc_state.event_manager, known_url)
-    M._state.opencode_attached = true
+  local url = oc_state.opencode_server and oc_state.opencode_server.url
+  if url then
+    do_attach(url)
     return
   end
-
-  if not (oc_state.store and oc_state.store.subscribe) then
-    log.warn('opencode.nvim is loaded but its state store is missing; attach_opencode is a no-op')
+  local em = oc_state.event_manager
+  if not em then
+    log.info('opencode.nvim server is not running; skipping attach')
     return
   end
-
-  log.info('opencode.nvim EventManager not ready yet; deferring attach until it is')
-  oc_state.store.subscribe('event_manager', function(_, new_val)
+  log.info('opencode.nvim server not ready yet; deferring attach until it is')
+  local on_ready = function(data)
+    em:unsubscribe('custom.server_ready', on_ready)
     if M._state.opencode_attached then return end
-    if not new_val then return end
-    wire(new_val, oc_state.opencode_server and oc_state.opencode_server.url)
-    M._state.opencode_attached = true
-  end)
+    do_attach(data.url)
+  end
+  em:subscribe('custom.server_ready', on_ready)
 end
 
 ---@return string?
