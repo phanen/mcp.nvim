@@ -5,25 +5,13 @@
 -- rather than going through a live Connection, so they can assert
 -- on handler return values without racing against vim.schedule.
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 describe('server', function()
-  before_each(function()
-    clear()
-    exec_lua(
-      function()
-        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-          .. ';'
-          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-          .. ';'
-          .. package.path
-      end
-    )
-  end)
+  before_each(function() h.setup() end)
 
   it('returns -32603 if tools/list is called before initialize', function()
     local out = exec_lua(function()
@@ -142,6 +130,50 @@ describe('server', function()
     eq(true, out[1] == 'echo' or out[1] == 'sum')
     eq(true, out[2] == 'echo' or out[2] == 'sum')
     eq(true, out[1] ~= out[2])
+  end)
+
+  it('tools/list JSON-encodes without empty-table -> [] pitfalls', function()
+    -- Empty Lua tables serialise as `[]` via `vim.json.encode`, but the
+    -- MCP SDK's `ToolSchema` requires `inputSchema.properties` to be a
+    -- plain JSON object. Tools with no arguments must omit `properties`
+    -- (or use `vim.empty_dict()`); never leave `properties = {}`.
+    local out = exec_lua(function()
+      local server = require('mcp.server')
+      local registry = require('mcp.tool_registry').new()
+      local s = server.new({
+        on_request = function() end,
+        on_notify = function() end,
+        on_exit = function() end,
+        on_error = function() end,
+        is_closing = function() return false end,
+        notify = function() end,
+      }, registry)
+
+      -- Use the module directly; this test guards the shape the
+      -- tool author ships, not the `register()` flow.
+      registry:register(require('mcp.tools.nvim.quickfix'))
+      s:_dispatch('initialize', { protocolVersion = '2025-03-26' })
+      s:_on_notify('notifications/initialized', nil)
+      local result = s:_dispatch('tools/list', nil)
+
+      local encoded = vim.json.encode(result)
+      local offending = {}
+      for _, tool in ipairs(result.tools) do
+        local props = tool.inputSchema and tool.inputSchema.properties
+        if type(props) == 'table' and not props[1] and next(props) == nil then
+          -- empty Lua table: harmless in memory, but encodes as `[]`
+          offending[#offending + 1] = tool.name
+        end
+      end
+      return { offending = offending, encoded = encoded }
+    end)
+    eq(0, #out.offending, 'tools encode empty properties as `[]`: ' .. vim.inspect(out.offending))
+    -- belt-and-braces: assert the literal string never appears either.
+    eq(
+      true,
+      not out.encoded:find('"properties":[]', 1, true),
+      'encoded JSON contains "properties":[]'
+    )
   end)
 
   it('invokes a registered tool and wraps the return value', function()

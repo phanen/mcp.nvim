@@ -200,4 +200,3 @@ Clients **SHOULD**:
   the local tool author to validate themselves; the JSON-RPC layer already
   decodes JSON safely).
 - Unknown tool names return JSON-RPC error code `-32602` ("Unknown tool").
-- The 9 built-in LSP tools are documented in [`../../lua/mcp/tools/lsp.lua`](../../lua/mcp/tools/lsp.lua).

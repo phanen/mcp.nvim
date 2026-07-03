@@ -3,11 +3,10 @@
 -- End-to-end tests of the mcp.nvim public API: setup(), start/stop,
 -- and a full round-trip HTTP request through the live plugin instance.
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 --- Drive a raw HTTP/1.1 request via `vim.uv.new_tcp`.
 local function http_request(host, port, method, path, body, headers)
@@ -59,13 +58,7 @@ end
 
 describe('plugin', function()
   before_each(function()
-    clear()
-    exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
+    h.setup(function()
       -- Reset plugin state so tests do not bleed.
       local mcp = require('mcp')
       mcp.stop()
@@ -318,24 +311,142 @@ describe('plugin', function()
     end
   )
 
-  it(':checkhealth mcp reports the number of registered tools', function()
-    local ok = exec_lua(function()
+  it('register() errors before setup() is called', function()
+    local ok, err = exec_lua(function()
       local mcp = require('mcp')
-      mcp.setup({
-        http = { enabled = false },
-        tools = {
-          { name = 'a', description = 'A', handler = function() return {} end },
-          { name = 'b', description = 'B', handler = function() return {} end },
-        },
-      })
-
-      local rows = require('mcp.health').check()
-      local count_text = nil
-      for _, r in ipairs(rows) do
-        if r[2] and r[2]:match('tool%(s%) registered') then count_text = r[2] end
-      end
-      return count_text
+      return pcall(function()
+        mcp.register({ name = 'x', description = 'x', handler = function() end })
+      end)
     end)
-    eq('2 tool(s) registered', ok)
+    eq(false, ok)
+    eq(true, type(err) == 'string' and err:find('setup') ~= nil, tostring(err))
   end)
+
+  it('register({ mod = "..." }) registers a built-in tool module', function()
+    local out = exec_lua(function()
+      local mcp = require('mcp')
+      mcp.setup({ http = { enabled = false } })
+      mcp.register({ mod = 'mcp.tools.lsp.definition' })
+      local def = mcp.registry():get('lsp_definition')
+      return {
+        name = def and def.name or nil,
+        has_handler = type(def and def.handler) == 'function',
+      }
+    end)
+    eq('lsp_definition', out.name)
+    eq(true, out.has_handler)
+  end)
+
+  it('register({ mod = "..." }) works for a module that returns a ToolDef table', function()
+    local ok, err = exec_lua(function()
+      local mcp = require('mcp')
+      mcp.setup({ http = { enabled = false } })
+      return pcall(function() mcp.register({ mod = 'mcp.tools.lsp.definition' }) end)
+    end)
+    eq(true, ok, tostring(err))
+  end)
+
+  it('register({ name = ..., handler = ... }) registers an inline tool', function()
+    local out = exec_lua(function()
+      local mcp = require('mcp')
+      mcp.setup({ http = { enabled = false } })
+      mcp.register({
+        name = 'greet',
+        description = 'Say hi',
+        handler = function(args) return { { type = 'text', text = 'hi ' .. args.name } } end,
+      })
+      local def = mcp.registry():get('greet')
+      local result = def.handler({ name = 'world' })
+      return { name = def.name, text = result[1].text }
+    end)
+    eq('greet', out.name)
+    eq('hi world', out.text)
+  end)
+
+  it('register() with the same name overrides the previous tool', function()
+    local out = exec_lua(function()
+      local mcp = require('mcp')
+      mcp.setup({ http = { enabled = false } })
+      mcp.register({
+        name = 'greet',
+        description = 'first',
+        handler = function() return { { type = 'text', text = 'first' } } end,
+      })
+      mcp.register({
+        name = 'greet',
+        description = 'second',
+        handler = function() return { { type = 'text', text = 'second' } } end,
+      })
+      local def = mcp.registry():get('greet')
+      local result = def.handler({})
+      return { description = def.description, text = result[1].text }
+    end)
+    eq('second', out.description)
+    eq('second', out.text)
+  end)
+
+  it('register({ mod = "..." }) still supports a factory (opts) -> ToolDef module', function()
+    -- For backward compat, modules may export `(opts) -> ToolDef` factories.
+    -- `opts` from the spec is forwarded; modules returning a plain
+    -- ToolDef table ignore `opts`.
+    local out = exec_lua(function()
+      local mcp = require('mcp')
+      mcp.setup({ http = { enabled = false } })
+      package.loaded['mcp_test_factory_tool'] = nil
+      package.loaded['mcp_test_factory_tool'] = function(opts)
+        return {
+          name = 'greet',
+          description = 'factory-built',
+          handler = function() return { { type = 'text', text = opts and opts.greeting or 'hi' } } end,
+        }
+      end
+      mcp.register({
+        mod = 'mcp_test_factory_tool',
+        opts = { greeting = 'hello' },
+      })
+      local def = mcp.registry():get('greet')
+      return def.handler({})[1].text
+    end)
+    eq('hello', out)
+  end)
+
+  it('register({ spec1, spec2, ... }) registers multiple tools at once', function()
+    local out = exec_lua(function()
+      local mcp = require('mcp')
+      mcp.setup({ http = { enabled = false } })
+      mcp.register({
+        { mod = 'mcp.tools.lsp.definition' },
+        { mod = 'mcp.tools.lsp.hover' },
+        { name = 'custom', description = 'custom tool', handler = function() return {} end },
+      })
+      local names = {}
+      for _, t in ipairs(mcp.registry():list()) do
+        table.insert(names, t.name)
+      end
+      table.sort(names)
+      return names
+    end)
+    eq('custom', out[1])
+    eq('lsp_definition', out[2])
+    eq('lsp_hover', out[3])
+  end)
+
+  it(
+    'register({ mod = "..." }) errors when the module export is not a function or a ToolDef-shaped table',
+    function()
+      local ok, err = exec_lua(function()
+        local mcp = require('mcp')
+        mcp.setup({ http = { enabled = false } })
+        package.loaded['mcp_test_bogus'] = nil
+        package.loaded['mcp_test_bogus'] = 42
+        return pcall(function() mcp.register({ mod = 'mcp_test_bogus' }) end)
+      end)
+      eq(false, ok)
+      eq(
+        true,
+        type(err) == 'string' and (err:find('table') ~= nil or err:find('function') ~= nil),
+        tostring(err)
+      )
+    end
+  )
 end)

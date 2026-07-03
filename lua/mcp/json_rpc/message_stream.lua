@@ -1,16 +1,3 @@
--- mcp.json_rpc.message_stream
---
--- Generic framing layer: feed it raw bytes from a transport, get back
--- complete decoded message bodies. The framing rule itself is injected,
--- so the same MessageStream can serve LSP-style Content-Length framing,
--- newline-delimited JSON (MCP stdio), and SSE (MCP Streamable HTTP).
---
--- Ported and adapted from `vim.net.MessageStream` in
--- runtime/lua/vim/net/_transport.lua which is
--- released under Apache-2.0 by the Neovim project. We re-implement it
--- here so mcp.nvim is self-contained and does not depend on Neovim
--- internal modules (`vim._core.stringbuffer`).
-
 ---@class mcp.json_rpc.message_stream
 ---@field private strbuf string[]
 ---@field private byte_len integer
@@ -60,10 +47,6 @@ function MessageStream:feed(err, data)
       break
     end
 
-    -- `consumed` is the number of bytes to drop from the front of the
-    -- accumulated buffer. We don't actually splice; we just track the
-    -- cumulative skip so future decoders can ignore already-consumed
-    -- bytes. This keeps allocation cost low for large streams.
     self:_advance(consumed or #body)
     self.on_read(nil, body)
   end

@@ -1,9 +1,3 @@
--- plugin/mcp
---
--- User-facing commands for the mcp.nvim plugin. Defined here rather
--- than in lua/ so they are auto-registered when the plugin is
--- loaded by Neovim's package loader.
-
 if vim.g.loaded_mcp_nvim == 1 then return end
 vim.g.loaded_mcp_nvim = 1
 
@@ -37,10 +31,6 @@ vim.api.nvim_create_user_command('McpPort', function()
 end, { desc = 'Print the mcp.nvim HTTP server URL' })
 
 vim.api.nvim_create_user_command('McpAttachOpencode', function(args)
-  -- Convenience: same as `require('mcp').attach_opencode({ name = ... })`.
-  -- Useful when the user wants to wire mcp.nvim + opencode.nvim
-  -- after both are already loaded (e.g. via :packadd) and prefers
-  -- the command over a function call.
   local mcp = require('mcp')
   local name = args.args and args.args:match('^%S+')
   mcp.attach_opencode({ name = name })

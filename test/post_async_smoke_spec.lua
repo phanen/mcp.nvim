@@ -5,11 +5,10 @@
 -- (b) SSE connections can be re-opened after one is closed (the opencode
 -- picker disconnect->reconnect cycle routes through here).
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 --- Drive a single raw HTTP/1.1 request and return the full raw response.
 local function http_request(host, port, method, path, body, headers)
@@ -120,18 +119,7 @@ local function wait_chunks_contains(needle, timeout_ms)
 end
 
 describe('post-async-smoke', function()
-  before_each(function()
-    clear()
-    exec_lua(
-      function()
-        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-          .. ';'
-          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-          .. ';'
-          .. package.path
-      end
-    )
-  end)
+  before_each(function() h.setup() end)
 
   it('full MCP wire protocol: initialize -> tools/list -> tools/call', function()
     local port = exec_lua(function()

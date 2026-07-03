@@ -6,23 +6,14 @@
 -- `--listen`-and-`curl` round-trips (not in the test suite, because the
 -- on_exit path is sensitive to event-loop timing under `--headless`).
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 describe('http_client.post_json', function()
   before_each(function()
-    clear()
-    exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
-      package.loaded['mcp.util.http_client'] = nil
-    end)
+    h.setup(function() package.loaded['mcp.util.http_client'] = nil end)
   end)
 
   local function install_system_mock(commands)

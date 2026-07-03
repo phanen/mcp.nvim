@@ -1,23 +1,11 @@
--- Minimal async HTTP POST helper. We shell out to `curl` rather than
--- speak HTTP ourselves, so the opencode server can stay on plaintext
--- localhost and we sidestep TLS / DNS / platform quirks.
-
 local M = {}
 
 ---@class mcp.util.http_client.Result
 ---@field status integer
 ---@field body string
 
---- Send a POST request with a JSON body. `on_done(result, err)` fires
---- exactly once when the response arrives or the request fails /
---- times out. The callback runs in the main loop (deferred via
---- vim.schedule), so vim.notify and other UI APIs are safe inside it.
----
---- URL must be of the form `http://host:port/path`. HTTPS is not
---- implemented.
----
 ---@param url string
----@param body string  serialised JSON
+---@param body string
 ---@param opts? { timeout_ms?: integer, headers?: table<string, string> }
 ---@param on_done fun(result: mcp.util.http_client.Result?, err: string?)
 function M.post_json(url, body, opts, on_done)
@@ -43,8 +31,7 @@ function M.post_json(url, body, opts, on_done)
   end
   table.insert(args, '--data-raw')
   table.insert(args, body)
-  -- Sentinel `\n%{http_code}` appended after the body lets us recover
-  -- the status without parsing curl's `-v` noise.
+  -- Trailing sentinel recovers the status without parsing curl -v.
   table.insert(args, '-w')
   table.insert(args, '\n%{http_code}')
   table.insert(args, url)

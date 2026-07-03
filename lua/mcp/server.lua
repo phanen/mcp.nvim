@@ -1,25 +1,13 @@
--- mcp.server
---
--- The MCP server protocol layer. Owns the lifecycle state machine
--- (Created / Connected / Negotiating / Ready / Closed), the
--- capability object announced in the `initialize` response, and the
--- dispatch table for every method we implement.
---
--- This module is transport-agnostic: it takes a
--- `mcp.json_rpc.Connection` and a `mcp.tool_registry.ToolRegistry`
--- and binds the latter's methods onto JSON-RPC handlers.
-
 local json_rpc = require('mcp.json_rpc')
 
 local PROTOCOL_VERSION = '2025-03-26'
 local SERVER_INFO = {
   name = 'mcp.nvim',
-  version = '0.1.0',
+  version = '0.0.1',
 }
 
 local State = {
   Created = 'Created',
-  Connected = 'Connected',
   Negotiating = 'Negotiating',
   Ready = 'Ready',
   Closed = 'Closed',
@@ -51,11 +39,7 @@ function M.new(connection, registry, opts)
     client_capabilities = nil,
     instructions = opts.instructions,
   }, Server)
-
-  -- Bind the connection so the registry can dispatch list_changed
-  -- notifications automatically.
   registry:set_connection(connection)
-
   self:_bind_dispatchers()
   return self
 end
@@ -64,15 +48,7 @@ end
 function Server:_bind_dispatchers()
   self.connection.on_request = function(method, params) return self:_dispatch(method, params) end
   self.connection.on_notify = function(method, params) self:_on_notify(method, params) end
-  self.connection.on_exit = function() self.state = State.Closed end
-  self.connection.on_error = function(code, err)
-    if vim.env.MCP_DEBUG then
-      vim.notify(
-        string.format('[mcp.server] connection error %s: %s', code, vim.inspect(err)),
-        vim.log.levels.ERROR
-      )
-    end
-  end
+  self.connection.on_sse_closed = function() self:_reset_for_new_session() end
 end
 
 ---@param self mcp.Server
@@ -81,11 +57,9 @@ end
 ---@return any result
 ---@return table? error
 function Server:_dispatch(method, params)
-  -- Lifecycle methods are always allowed, regardless of state.
   if method == 'initialize' then return self:_handle_initialize(params) end
   if method == 'ping' then return {}, nil end
 
-  -- All other methods require Ready.
   if self.state ~= State.Ready then
     return nil,
       json_rpc.make_error(-32603, 'Server not initialized: state=' .. tostring(self.state))
@@ -97,10 +71,6 @@ function Server:_dispatch(method, params)
   return nil, json_rpc.errors.method_not_found(method)
 end
 
---- Drop the current session and re-arm the lifecycle state machine so
---- a future `initialize` can establish a fresh handshake. Called by the
---- HTTP transport when its last SSE stream drops — the only signal we
---- have, lacking `Mcp-Session-Id`, that the previous client has gone.
 ---@param self mcp.Server
 function Server:_reset_for_new_session()
   if self.state == State.Closed then return end
@@ -117,13 +87,12 @@ function Server:_on_notify(method, _params)
     if self.state == State.Negotiating then
       self.state = State.Ready
     elseif self.state == State.Ready then
-      -- Idempotent re-init notification. Ignore.
+      -- Idempotent re-init notification.
     else
       self.state = State.Closed
     end
   elseif method == 'notifications/cancelled' then
-    -- We do not currently support long-running requests, so cancellation
-    -- is effectively a no-op. The notification is acknowledged.
+    -- No long-running requests, so cancellation is a no-op.
   end
 end
 
@@ -180,9 +149,8 @@ function Server:_handle_tools_call(params)
   local args = params.arguments or {}
   local ok, content_or_err = pcall(def.handler, args)
   if not ok then
-    -- Handler raised an error: surface as isError, do not propagate
-    -- the exception to the client. This matches the MCP spec's
-    -- tool-level error semantics.
+    -- Per the MCP spec, tool-level errors surface as `isError: true`,
+    -- not as protocol exceptions.
     return {
       content = { { type = 'text', text = tostring(content_or_err) } },
       isError = true,
@@ -190,7 +158,6 @@ function Server:_handle_tools_call(params)
       nil
   end
 
-  -- Handler returned nil + error string: same isError shape.
   if content_or_err == nil then
     return {
       content = { { type = 'text', text = tostring(def and 'unknown error' or '') } },
@@ -199,11 +166,8 @@ function Server:_handle_tools_call(params)
       nil
   end
 
-  -- Handler returned either a single content item, a list of content
-  -- items, or a full `tools/call` result envelope. We always include
-  -- isError=false on success so the JSON schema matches the protocol
-  -- spec; the success/failure distinction is carried by isError alone,
-  -- not by an absent key.
+  -- Accept single content item, list of content, or full result envelope.
+  -- Always emit `isError` on success so the shape matches the spec.
   if type(content_or_err) == 'table' then
     if content_or_err.content then
       local result = vim.deepcopy(content_or_err)

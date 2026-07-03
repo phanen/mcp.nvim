@@ -1,26 +1,8 @@
--- mcp.tests.lsp_tools_spec
---
--- Tests for the built-in LSP tool handlers. We mock
--- `vim.lsp.buf_request_sync` rather than starting a real LSP server,
--- because nvim-test runs in a headless environment without any
--- language server infrastructure.
---
--- Each test calls the handler directly (inside the same `exec_lua`
--- sandbox where `vim.lsp` mocks are installed) and asserts on the
--- shape that the tool handler itself returns. The wrapping into the
--- MCP `tools/call` envelope (with `isError`) is exercised by the
--- server_spec tests, not here.
+local h = require('test.helpers')
 
-local n = require('nvim-test.helpers')
+local eq = h.eq
+local exec_lua = h.exec_lua
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
-
---- Run `body` (a Lua source string) inside the exec_lua sandbox
---- after installing a `buf_request_sync` mock that returns `payload`.
---- To assert on the captured `params` passed to the LSP request,
---- the body should write them to `_G.__captured` and return them.
 local function with_mock_lsp(payload, body)
   return exec_lua([[
     _G.__original_buf_request_sync = vim.lsp.buf_request_sync
@@ -31,8 +13,6 @@ local function with_mock_lsp(payload, body)
   ]] .. body)
 end
 
---- Same as above, but the mock returns `nil` to simulate timeout /
---- no-clients. Used for the negative test.
 local function with_mock_lsp_nil(body)
   return exec_lua([[
     _G.__original_buf_request_sync = vim.lsp.buf_request_sync
@@ -45,15 +25,7 @@ end
 
 describe('lsp tools', function()
   before_each(function()
-    clear()
-    exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
-
-      -- Scratch file in cwd (nvim-test sandboxing forbids /tmp).
+    h.setup(function()
       local f = io.open('lsp_test_fixture.txt', 'w')
       f:write('-- scratch\n')
       f:close()
@@ -64,27 +36,6 @@ describe('lsp tools', function()
     exec_lua(function() os.remove('lsp_test_fixture.txt') end)
   end)
 
-  it('registers all expected tool names', function()
-    local names = exec_lua(function()
-      local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry, { timeout_ms = 1000 })
-      local out = {}
-      for _, t in ipairs(registry:list()) do
-        table.insert(out, t.name)
-      end
-      table.sort(out)
-      return out
-    end)
-    eq('lsp_definition', names[1])
-    eq('lsp_document_symbols', names[2])
-    eq('lsp_hover', names[3])
-    eq('lsp_implementation', names[4])
-    eq('lsp_references', names[5])
-    eq('lsp_rename', names[6])
-    eq('lsp_type_definition', names[7])
-    eq('lsp_workspace_symbols', names[8])
-  end)
-
   it('lsp_definition formats Location results as file:line:col lines', function()
     local out = with_mock_lsp(
       {
@@ -92,7 +43,7 @@ describe('lsp tools', function()
       },
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.definition'))
       return registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
@@ -113,7 +64,7 @@ describe('lsp tools', function()
       },
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.definition'))
       return registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
@@ -130,7 +81,7 @@ describe('lsp tools', function()
       },
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.references'))
       local res = registry:get('lsp_references').handler({
         path = 'lsp_test_fixture.txt', line = 5, character = 0,
       })
@@ -148,7 +99,7 @@ describe('lsp tools', function()
       {},
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.references'))
       registry:get('lsp_references').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0, include_declaration = false,
       })
@@ -165,7 +116,7 @@ describe('lsp tools', function()
       },
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.hover'))
       return registry:get('lsp_hover').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
@@ -190,7 +141,7 @@ describe('lsp tools', function()
       },
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.document_symbols'))
       return registry:get('lsp_document_symbols').handler({
         path = 'lsp_test_fixture.txt',
       })
@@ -204,7 +155,7 @@ describe('lsp tools', function()
       {},
       [[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.definition'))
       return registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
@@ -216,18 +167,16 @@ describe('lsp tools', function()
   it('returns isError=true when the LSP request times out', function()
     local out = with_mock_lsp_nil([[
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry, { timeout_ms = 10 })
+      registry:register(require('mcp.tools.lsp.definition'))
       local r, err = registry:get('lsp_definition').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
       })
       return { r = r, err = err }
     ]])
-    -- nil result, second value is the error string
     eq(nil, out.r)
     eq(true, type(out.err) == 'string' and out.err:find('timed out') ~= nil, tostring(out.err))
   end)
 
-  -- `local foo = 1\nreturn foo\n` so rename edits are observable.
   local function setup_rename_fixture()
     exec_lua(function()
       local f = io.open('lsp_test_fixture.txt', 'w')
@@ -243,7 +192,7 @@ describe('lsp tools', function()
       { changes = {} },
       [[
         local registry = require('mcp.tool_registry').new()
-        require('mcp.tools.lsp').register_all(registry)
+        registry:register(require('mcp.tools.lsp.rename'))
         registry:get('lsp_rename').handler({
           path = 'lsp_test_fixture.txt', line = 0, character = 6,
           new_name = 'bar',
@@ -280,7 +229,7 @@ describe('lsp tools', function()
       end
 
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.rename'))
       local res = registry:get('lsp_rename').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 7,
         new_name = 'bar',
@@ -319,7 +268,7 @@ describe('lsp tools', function()
       end
 
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.rename'))
       registry:get('lsp_rename').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 7,
         new_name = 'baz',
@@ -336,7 +285,7 @@ describe('lsp tools', function()
       nil,
       [[
         local registry = require('mcp.tool_registry').new()
-        require('mcp.tools.lsp').register_all(registry)
+        registry:register(require('mcp.tools.lsp.rename'))
         return registry:get('lsp_rename').handler({
           path = 'lsp_test_fixture.txt', line = 0, character = 0,
           new_name = 'bar',
@@ -348,8 +297,6 @@ describe('lsp tools', function()
 
   it('lsp_rename applies edits in reverse order so positions stay valid', function()
     setup_rename_fixture()
-    -- Two adjacent edits on the same line: document-order application
-    -- would shift the second range; reverse-order keeps byte offsets.
     local out = exec_lua([[
       local f = io.open('lsp_test_fixture.txt', 'w')
       f:write('aa bb cc dd\n')
@@ -361,9 +308,7 @@ describe('lsp tools', function()
         return { { result = {
           changes = {
             [fixture_uri] = {
-              -- Replace "bb" with "BBB" at col 3..5
               { range = { start = { line = 0, character = 3 }, ['end'] = { line = 0, character = 5 } }, newText = 'BBB' },
-              -- Replace "cc" with "CCC" at col 6..8
               { range = { start = { line = 0, character = 6 }, ['end'] = { line = 0, character = 8 } }, newText = 'CCC' },
             },
           },
@@ -371,7 +316,7 @@ describe('lsp tools', function()
       end
 
       local registry = require('mcp.tool_registry').new()
-      require('mcp.tools.lsp').register_all(registry)
+      registry:register(require('mcp.tools.lsp.rename'))
       registry:get('lsp_rename').handler({
         path = 'lsp_test_fixture.txt', line = 0, character = 0,
         new_name = 'unused',

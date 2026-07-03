@@ -7,26 +7,13 @@
 -- TCP / stdio transports live in transport_spec.lua (added when the
 -- transport module lands).
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 describe('json_rpc', function()
-  before_each(function()
-    clear()
-    exec_lua(function()
-      -- nvim-test's busted runner does not propagate --lpath to the
-      -- inner nvim --exec Lua chunks in a way we can rely on, so we
-      -- explicitly prepend the plugin's lua/ tree to package.path.
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
-    end)
-  end)
+  before_each(function() h.setup() end)
 
   it('exposes the standard JSON-RPC reserved error codes', function()
     eq(-32700, exec_lua(function() return require('mcp.json_rpc').error_code.parse_error end))

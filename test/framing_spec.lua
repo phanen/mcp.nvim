@@ -4,19 +4,13 @@
 -- are pure functions over byte buffers and do not need a live
 -- transport, so they run as ordinary busted cases.
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 describe('framing.newline', function()
-  before_each(function()
-    clear()
-    exec_lua(
-      function() package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p') .. ';' .. package.path end
-    )
-  end)
+  before_each(function() h.setup() end)
 
   it('returns nil until a complete line is in the buffer', function()
     local got = exec_lua(function()
@@ -58,12 +52,7 @@ describe('framing.newline', function()
 end)
 
 describe('framing.content_length', function()
-  before_each(function()
-    clear()
-    exec_lua(
-      function() package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p') .. ';' .. package.path end
-    )
-  end)
+  before_each(function() h.setup() end)
 
   it('returns nil until the header terminator arrives', function()
     local got = exec_lua(function()
@@ -104,12 +93,7 @@ describe('framing.content_length', function()
 end)
 
 describe('framing.sse', function()
-  before_each(function()
-    clear()
-    exec_lua(
-      function() package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p') .. ';' .. package.path end
-    )
-  end)
+  before_each(function() h.setup() end)
 
   it('encodes a single-line payload with id and data', function()
     local got = exec_lua(function()

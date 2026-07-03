@@ -4,11 +4,10 @@
 -- binds a server on an ephemeral localhost port, drives a raw TCP
 -- HTTP request against it, and asserts on the response.
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 --- Drive a raw HTTP/1.1 request via `vim.uv.new_tcp`. Returns the
 --- complete raw response as a single string.
@@ -61,19 +60,7 @@ local function http_request(host, port, method, path, body, headers)
 end
 
 describe('http_transport', function()
-  before_each(function()
-    clear()
-    exec_lua(
-      function()
-        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-          .. ';'
-          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-          .. ';'
-          .. package.path
-      end
-    )
-  end)
-
+  before_each(function() h.setup() end)
   it('binds an ephemeral port when port=0 and returns the chosen port', function()
     local out = exec_lua(function()
       local http = require('mcp.json_rpc.transport.http')

@@ -7,22 +7,14 @@
 -- EventManager, store-driven re-registration on `current_cwd` /
 -- `active_session` changes, and the missing-opencode.nvim fallbacks.
 
-local n = require('nvim-test.helpers')
+local h = require('test.helpers')
 
-local eq = n.eq
-local clear = n.clear
-local exec_lua = n.exec_lua
+local eq = h.eq
+local exec_lua = h.exec_lua
 
 describe('attach_opencode', function()
   before_each(function()
-    clear()
-    exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
-
+    h.setup(function()
       local mcp = require('mcp')
       mcp.stop()
       mcp._state.setup_done = false
@@ -38,12 +30,6 @@ describe('attach_opencode', function()
     'wires up an EventManager subscription that fires opencode_register on server_ready',
     function()
       local out = exec_lua(function()
-        package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-          .. ';'
-          .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-          .. ';'
-          .. package.path
-
         local fake_em = { _subs = {} }
         fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
         local fake_store = { _store_subs = {} }
@@ -107,12 +93,6 @@ describe('attach_opencode', function()
 
   it('re-registers when state.current_cwd changes', function()
     local out = exec_lua(function()
-      package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-        .. ';'
-        .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-        .. ';'
-        .. package.path
-
       local fake_em = { _subs = {} }
       fake_em.subscribe = function(self, event, cb) fake_em._subs[event] = cb end
       local store_subs = {}

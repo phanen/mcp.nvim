@@ -1,12 +1,3 @@
--- mcp.json_rpc.transport.tcp
---
--- TCP transport built on `vim.uv.new_tcp()`. Supports both client
--- (`connect`) and server (`listen` + per-connection accept) modes.
--- Each accepted peer is wrapped in a Connection-ready Transport.
---
--- Stream framing is delegated to the caller via the `decode`/`encode`
--- functions on the Connection. The transport itself is byte-oriented.
-
 local M = {}
 
 ---@class mcp.json_rpc.transport.tcp.Server
@@ -29,36 +20,32 @@ end
 function Server:listen()
   local handle = self.handle
   local connections = {}
-  handle:listen(
-    128,
-    vim.schedule_wrap(function(err)
-      if err then return end
-      local client = vim.uv.new_tcp()
-      local ok, accept_err = pcall(function() handle:accept(client) end)
-      if not ok then return end
-      -- Each accepted client is its own Transport. We hand back a
-      -- table with the same shape Connection expects.
-      table.insert(connections, client)
-      local outbound = {}
-      local transport = {
-        handle = client,
-        listen = function(self, on_read, on_exit)
-          client:read_start(vim.schedule_wrap(function(read_err, data) on_read(read_err, data) end))
-          self._on_exit = on_exit
-        end,
-        write = function(_, msg)
-          if client:is_closing() then return false end
-          local ok = pcall(function() client:write(msg) end)
-          return ok
-        end,
-        is_closing = function() return client:is_closing() end,
-        terminate = function()
-          if not client:is_closing() then client:close() end
-        end,
-      }
-      if Server.on_connection then Server.on_connection(transport) end
-    end)
-  )
+  handle:listen(128, function(err)
+    if err then return end
+    local client = vim.uv.new_tcp()
+    local ok = pcall(function() handle:accept(client) end)
+    if not ok then return end
+    table.insert(connections, client)
+    local outbound = {}
+    local transport = {
+      listen = function(_, on_read, on_exit)
+        client:read_start(vim.schedule_wrap(function(read_err, data) on_read(read_err, data) end))
+        client:on('end', function() on_exit(0, 0) end)
+      end,
+      is_closing = function(_) return client:is_closing() end,
+      terminate = function(_)
+        if not client:is_closing() then client:close() end
+      end,
+      write = function(_, msg)
+        if client:is_closing() then return false end
+        local write_ok = pcall(function() client:write(msg) end)
+        return write_ok
+      end,
+      outbound = outbound,
+    }
+    transport.handle = client
+    return transport
+  end)
   return handle:getsockname().port
 end
 
@@ -79,11 +66,8 @@ function M.connect(host, port, on_connect)
     host,
     port,
     vim.schedule_wrap(function(err)
-      if err then
-        if on_connect then on_connect(err, nil) end
-        return
-      end
-      if on_connect then on_connect(nil, client) end
+      if err then return end
+      if on_connect then on_connect(client) end
     end)
   )
   return client

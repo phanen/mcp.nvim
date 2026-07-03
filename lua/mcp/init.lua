@@ -1,19 +1,7 @@
--- mcp
---
--- Public entry point. `setup(opts)` configures the plugin and
--- (optionally) starts the HTTP server. The plugin then exposes a
--- `ToolRegistry` that callers can register MCP tools into via
--- `require('mcp').registry:register({ ... })`.
---
--- The plugin is the integration layer between the lower-level
--- modules (json_rpc, server, tool_registry, transport/http). User
--- code typically does not need to touch the lower-level modules
--- directly.
-
 local M = {}
 
 ---@class mcp.Opts
----@field tools? table[]   list of mcp.ToolDef to register at setup time
+---@field tools? table[]   DEPRECATED: list of mcp.ToolDef to register at setup time. Prefer `register()` after setup; kept for backward compatibility.
 ---@field http? { enabled?: boolean, host?: string, port?: integer, allowed_origins?: string[], endpoint?: string }
 ---@field server_info? table  override the SERVER_INFO used in `initialize` responses
 ---@field instructions? string  server instructions shown to clients
@@ -34,25 +22,16 @@ M._state = {
   http_port = nil,
 }
 
--- The HTTP server the stub connection forwards notifications to.
--- Set by `_start_http()` and cleared whenever the server is torn
--- down (see `stop()` and the re-`setup()` path). When nil, the
--- registry's `:notify` is a silent no-op — which is fine because
--- nothing is connected yet to receive a stream event.
+--- nil broadcasts are silently dropped, so the registry can call
+--- `:notify` before the HTTP server is bound.
 ---@type mcp.json_rpc.transport.http.Server?
 local http_broadcaster = nil
 
---- Configure the plugin. Idempotent: calling setup() more than once
---- replaces the configuration but does not leak the previous server.
 ---@param opts? mcp.Opts
 function M.setup(opts)
   opts = opts or {}
   opts.http = opts.http or {}
 
-  -- Tear down any previous HTTP server so repeated setup() calls
-  -- do not leak listening sockets. Clearing `http_broadcaster` here
-  -- also drops any in-flight stub_conn notifications on the floor
-  -- rather than letting them touch a dead server.
   if M._state.http_server then
     M._state.http_server:terminate()
     M._state.http_server = nil
@@ -60,43 +39,20 @@ function M.setup(opts)
     http_broadcaster = nil
   end
 
-  -- Default the HTTP layer to enabled, on localhost, port 0
-  -- (OS-assigned ephemeral). The chosen port is reported back to
-  -- the caller via `state.http_port` after setup.
   if opts.http.enabled == nil then opts.http.enabled = true end
   opts.http.host = opts.http.host or '127.0.0.1'
   if opts.http.port == nil then opts.http.port = 0 end
 
-  -- Apply SERVER_INFO overrides if provided.
   if opts.server_info then
     local server = require('mcp.server')
     server.SERVER_INFO = vim.tbl_extend('force', server.SERVER_INFO, opts.server_info)
   end
 
-  -- Construct the registry and seed it with the user-supplied tools.
   local registry = require('mcp.tool_registry').new()
   for _, def in ipairs(opts.tools or {}) do
     registry:register(def)
   end
 
-  -- Construct a stub JSON-RPC Connection. The HTTP transport does
-  -- not use this Connection for message delivery; it dispatches
-  -- directly to the on_request callback it was given at bind time.
-  --
-  -- The stub exists so that the registry has a Connection to call
-  -- `:notify(method, params)` on. That call forwards into the
-  -- streamable-HTTP server's SSE broadcaster, which serializes it
-  -- as a `text/event-stream` event to every connected client. Until
-  -- `_start_http()` runs the broadcaster is nil, so early-call
-  -- list_changed notifications are no-ops (and harmless — nothing
-  -- is connected yet to receive them).
-  --
-  -- The dispatcher methods (`on_request`, `on_notify`, `on_exit`,
-  -- `on_error`) are properties, not methods — the server stores
-  -- them directly. `is_closing` and `notify` are called via `:`
-  -- syntax by the registry, so they receive `self` as the first
-  -- argument and must accept it (even though the table shape is
-  -- fixed, the Lua method-call sugar is what wires it up).
   local stub_conn = {
     on_request = function() end,
     on_notify = function() end,
@@ -110,29 +66,20 @@ function M.setup(opts)
     end,
   }
 
-  -- Construct the MCP Server. The dispatcher is the bridge to the
-  -- HTTP transport.
   local mcp_server = require('mcp.server').new(stub_conn, registry)
 
-  -- Apply instructions override.
   if opts.instructions then mcp_server.instructions = opts.instructions end
 
-  -- Reset attach state so re-running setup() does not silently
-  -- leave a stale opencode subscription attached to the old server.
   M._state.opencode_attached = false
-
-  -- Save state.
   M._state.setup_done = true
   M._state.opts = opts
   M._state.registry = registry
   M._state.server = mcp_server
 
-  -- Start the HTTP server if enabled.
   if opts.http.enabled then M._start_http() end
 end
 
---- Start the streamable-HTTP server. Idempotent: re-calling while
---- already running is a no-op.
+--- Idempotent.
 function M._start_http()
   local opts = M._state.opts
   if M._state.http_server then return M._state.http_port end
@@ -141,30 +88,18 @@ function M._start_http()
   local server, port = http.bind(opts.http.host, opts.http.port, {
     endpoint = opts.http.endpoint,
     allowed_origins = opts.http.allowed_origins or { 'null' },
-    -- The HTTP transport is request-response, so it dispatches each
-    -- message directly. Requests go to the server dispatcher;
-    -- notifications (including the lifecycle
-    -- notifications/initialized) drive the server's lifecycle
-    -- state machine through _on_notify.
     on_request = function(method, params) return mcp_server:_dispatch(method, params) end,
     on_notify = function(method, params) mcp_server:_on_notify(method, params) end,
-    -- When the last SSE stream drops, the only client we had is gone
-    -- and the next connect cycle will start with a fresh `initialize`.
-    -- We don't implement Mcp-Session-Id, so SSE-liveness is the only
-    -- session-end signal we have.
+    -- SSE liveness is the only session-end signal we have, lacking
+    -- `Mcp-Session-Id`. A new client triggers a fresh `initialize`.
     on_sse_closed = function() mcp_server:_reset_for_new_session() end,
   })
   M._state.http_server = server
   M._state.http_port = port
-  -- Make the registry's stub_conn.notify forward into the new
-  -- server's SSE broadcaster. After this point, list_changed and
-  -- any future server-initiated notifications ride every open SSE
-  -- stream.
   http_broadcaster = server
   return port
 end
 
---- Stop the HTTP server.
 function M.stop()
   if M._state.http_server then
     M._state.http_server:terminate()
@@ -174,7 +109,6 @@ function M.stop()
   end
 end
 
---- Restart the HTTP server (useful when you change opts).
 function M.restart()
   M.stop()
   if M._state.setup_done and M._state.opts.http and M._state.opts.http.enabled ~= false then
@@ -182,12 +116,61 @@ function M.restart()
   end
 end
 
---- Convenience accessor for the tool registry so user code can do
---- `require('mcp').registry:register({ ... })`.
 ---@return mcp.ToolRegistry?
 function M.registry() return M._state.registry end
 
---- Currently bound HTTP port, or nil if not running.
+---@class mcp.RegisterSpec
+---@field mod? string  module path; must export either a `mcp.ToolDef` table or `(opts) -> mcp.ToolDef`
+---@field opts? table  forwarded to the module's factory when it returns a function (ignored otherwise)
+---@field name? string  (inline) tool name; required when `mod` is absent
+---@field description? string  (inline) tool description; required when `mod` is absent
+---@field inputSchema? table  (inline) JSON Schema describing arguments
+---@field handler? fun(args: table): table?, string?  (inline) tool handler; required when `mod` is absent
+---@field annotations? table  (inline) optional tool annotations
+
+---@param spec mcp.RegisterSpec | mcp.RegisterSpec[]
+function M.register(spec)
+  if not M._state.setup_done or not M._state.registry then
+    error('mcp.register requires setup() to be called first')
+  end
+  if type(spec) ~= 'table' then error('mcp.register: spec must be a table or a list of tables') end
+  if spec[1] ~= nil then
+    for _, s in ipairs(spec) do
+      M.register(s)
+    end
+    return
+  end
+
+  if not spec.mod then
+    M._state.registry:register(spec)
+    return
+  end
+
+  local ok, mod = pcall(require, spec.mod)
+  if not ok then
+    error(string.format('mcp.register: failed to require module %q: %s', spec.mod, tostring(mod)))
+  end
+  local def
+  if type(mod) == 'function' then
+    def = mod(spec.opts or {})
+  elseif type(mod) == 'table' then
+    def = mod
+  else
+    error(
+      string.format(
+        'mcp.register: module %q must export a `mcp.ToolDef` table or (opts) -> mcp.ToolDef factory',
+        spec.mod
+      )
+    )
+  end
+  if type(def) ~= 'table' then
+    error(
+      string.format('mcp.register: module %q returned %s, expected a table', spec.mod, type(def))
+    )
+  end
+  M._state.registry:register(def)
+end
+
 ---@return integer?
 function M.http_port() return M._state.http_port end
 
@@ -197,12 +180,6 @@ function M.http_port() return M._state.http_port end
 ---@field headers? table<string, string>  extra headers (e.g. opencode auth tokens)
 ---@field directory? string  workspace directory the registration is associated with (default `vim.fn.getcwd()`)
 
---- POST the mcp.nvim URL to an opencode server's `mcp.add` endpoint
---- so opencode connects to us and pulls tools. Module-local; only
---- called from `do_register` inside `attach_opencode`.
----
---- Must be defined before `M.attach_opencode` so its body captures
---- the local `M` upvalue rather than a forward-declared global.
 ---@param opencode_url string  base URL of the running opencode server (e.g. http://127.0.0.1:4096)
 ---@param opts? mcp.OpencodeRegisterOpts
 ---@param on_done fun(result: { ok: boolean, status?: integer, body?: any, error?: string })
@@ -215,10 +192,6 @@ local function opencode_register(opencode_url, opts, on_done)
     return
   end
 
-  -- opencode servers key MCP registrations by workspace directory; the
-  -- picker queries `GET /mcp?directory=<cwd>`, so we must POST with
-  -- the same directory or the server caches the entry against the
-  -- opencode process's CWD and the project buffer cannot see it.
   local directory = opts.directory or vim.fn.getcwd()
 
   local body = vim.json.encode({
@@ -268,24 +241,9 @@ local function opencode_register(opencode_url, opts, on_done)
   end)
 end
 
---- Subscribe to a running opencode.nvim instance and auto-register
---- this mcp.nvim server with it whenever opencode is ready, and re-
---- register whenever opencode.nvim's `current_cwd` or
---- `active_session` changes so that the entry stays visible in
---- `:Opencode mcp`. This is the recommended way to pair mcp.nvim
---- with opencode.nvim; the user does not have to write any
---- autocmd themselves.
----
---- opencode.nvim keys MCP state by workspace directory. The
---- `:Opencode mcp` picker queries `GET /mcp?directory=<current_cwd>`,
---- so we POST against the same directory. Rather than mirroring
---- opencode.nvim's DirChanged autocmd, we subscribe directly to
---- the opencode state store; that way we also catch new sessions
---- opened in a different directory without an `:cd`.
----
---- The function is idempotent: calling it more than once will not
---- register the callback twice.
----
+--- Idempotent. Subscribes to opencode.nvim's state store so the
+--- registration is re-issued on `current_cwd` / `active_session`
+--- changes without the user writing any autocmd.
 ---@param opts? { name?: string }
 function M.attach_opencode(opts)
   opts = opts or {}
@@ -296,20 +254,9 @@ function M.attach_opencode(opts)
     return
   end
 
-  -- All the actual wiring lives here so we can call it once now and
-  -- again later if the EventManager wasn't ready yet. opencode.nvim
-  -- publishes its EventManager as the last step of setup, and our
-  -- `config = function()` typically runs before that (users rarely
-  -- declare a `dependencies` edge), so `attach_opencode` is normally
-  -- invoked twice. The fix is to subscribe to the store's
-  -- `event_manager` slot and re-run the wiring once it lands.
-  --
-  -- `last_registered_directory` and `last_server_url` are module-
-  -- scoped rather than closure-local because the fast path also
-  -- writes to them and `schedule_re_register` reads them across
-  -- `wire` invocations.
   local last_registered_directory
   local last_server_url
+  local debounce_timer
 
   local function do_register(url, directory)
     last_registered_directory = directory
@@ -333,11 +280,6 @@ function M.attach_opencode(opts)
 
   local function schedule_re_register(directory)
     if not last_server_url or type(directory) ~= 'string' or directory == '' then return end
-    -- Skip bursts where the directory hasn't actually changed:
-    -- opencode.nvim's `check_cwd` (called from `opencode_ok` shortly
-    -- after `custom.server_ready`) pushes a redundant `set_current_cwd`
-    -- through the store, which would otherwise race the SSE handshake
-    -- the initial `mcp.add` is in the middle of.
     if directory == last_registered_directory then return end
     if debounce_timer and not debounce_timer:is_closing() then
       debounce_timer:stop()
@@ -356,41 +298,25 @@ function M.attach_opencode(opts)
   end
 
   local function wire(event_manager)
-    local debounce_timer
-
     event_manager:subscribe('custom.server_ready', function(data)
       last_server_url = data.url
       do_register(data.url, oc_state.current_cwd or vim.fn.getcwd())
     end)
 
-    -- Re-register when opencode.nvim's tracked cwd changes. The
-    -- `last_registered_directory` check above suppresses redundant
-    -- fires from opencode.nvim's own init path; a real user `:cd`
-    -- still produces a different directory and a real POST.
     oc_state.store.subscribe('current_cwd', function(_, new_val) schedule_re_register(new_val) end)
 
-    -- Re-register on active-session swaps too: a new session may land
-    -- in a different workspace.
     oc_state.store.subscribe(
       'active_session',
       function(_, new_val) schedule_re_register(new_val and new_val.directory) end
     )
   end
 
-  -- Fast path: opencode.nvim is already wired to its server and
-  -- `state.opencode_server.url` is populated. This covers the case
-  -- where `attach_opencode` is called *after* `:Opencode toggle`
-  -- (i.e. `custom.server_ready` has already fired and will not fire
-  -- again on its own). Read the URL directly instead of waiting for
-  -- an event that will never come, then subscribe to cwd/active_session
-  -- for the user-`:cd` case the same way the slow path would.
   if oc_state.opencode_server and oc_state.opencode_server.url then
     local last_server_url = oc_state.opencode_server.url
     local directory = oc_state.current_cwd or vim.fn.getcwd()
     do_register(last_server_url, directory)
 
     local function attach_followups()
-      local debounce_timer
       oc_state.store.subscribe(
         'current_cwd',
         function(_, new_val) schedule_re_register(new_val) end
@@ -415,19 +341,12 @@ function M.attach_opencode(opts)
     return
   end
 
-  -- EventManager is already wired; just hand off to `wire`.
   if oc_state.event_manager then
     wire(oc_state.event_manager)
     M._state.opencode_attached = true
     return
   end
 
-  -- Slow path: subscribe to the store for `event_manager` becoming
-  -- set. opencode.nvim publishes it as the last step of its setup,
-  -- so this callback runs at most once and then we are done. Falls
-  -- through to the user-visible warning if opencode.nvim's state
-  -- module is loaded but the store isn't (which would be unusual
-  -- — e.g. a manual stub for unit tests).
   if not (oc_state.store and oc_state.store.subscribe) then
     vim.notify(
       '[mcp] opencode.nvim is loaded but its state store is missing; attach_opencode is a no-op',
@@ -447,8 +366,6 @@ function M.attach_opencode(opts)
   end)
 end
 
---- Public URL of the bound HTTP server, suitable for passing to an
---- MCP client config. Returns `nil` when the server is not running.
 ---@return string?
 function M.url()
   local port = M._state.http_port

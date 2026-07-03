@@ -11,6 +11,9 @@ else
     UNAME ?= LINUX
 endif
 
+# Path separator inside --lpath: semicolon works for both POSIX and Windows.
+PATH_SEP := ;
+
 .DEFAULT_GOAL := build
 
 # ------------------------------------------------------------------------------
@@ -35,7 +38,7 @@ $(NVIM_TEST):
 test: $(NVIM_TEST)
 	NVIM_TEST_VERSION=$(NVIM_TEST_VERSION) \
 	$(NVIM_TEST)/bin/nvim-test test \
-		--lpath=$(PWD)/lua/?.lua \
+		--lpath='$(PWD)/lua/?.lua;$(PWD)/lua/?/init.lua' \
 		--verbose \
 		--filter="$(FILTER)"
 

@@ -1,15 +1,3 @@
--- mcp.tool_registry
---
--- Registry of MCP tools exposed by this server. Tools are described by
--- a JSON Schema `inputSchema` (Lua table) and a `handler` function that
--- takes the validated arguments and returns either a list of content
--- items or `nil, err_message` to surface an execution error with
--- `isError: true` in the tool result.
---
--- The registry also tracks `list_changed` capability and emits the
--- `notifications/tools/list_changed` notification through the
--- supplied Connection whenever the tool set changes.
-
 local M = {}
 
 ---@class mcp.ToolDef
@@ -26,8 +14,6 @@ local M = {}
 local ToolRegistry = {}
 ToolRegistry.__index = ToolRegistry
 
---- Construct an empty registry. Optionally accepts a Connection so
---- that `list_changed` notifications can be dispatched automatically.
 ---@param connection? mcp.json_rpc.Connection
 ---@return mcp.ToolRegistry
 function M.new(connection)
@@ -38,8 +24,6 @@ function M.new(connection)
   }, ToolRegistry)
 end
 
---- Bind (or rebind) the Connection used to emit list_changed
---- notifications. Pass `nil` to detach.
 ---@param registry mcp.ToolRegistry
 ---@param connection? mcp.json_rpc.Connection
 function ToolRegistry:set_connection(connection) self.connection = connection end
