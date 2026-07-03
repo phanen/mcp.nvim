@@ -80,14 +80,11 @@ local function make_log()
 end
 
 ---@class mcp.json_rpc.Dispatchers
-
 --- Invoked on notifications received from the other endpoint.
 ---@field on_notify fun(method: string, params?: table)
-
 --- Invoked on requests received from the other endpoint. Exactly one
 --- of result/error MUST be returned.
 ---@field on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
-
 ---@field on_exit fun(code: integer, signal: integer)
 ---@field on_error fun(code: integer, err: any)
 local Dispatchers = {}
