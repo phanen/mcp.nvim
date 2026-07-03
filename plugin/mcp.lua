@@ -4,21 +4,23 @@ vim.g.loaded_mcp_nvim = 1
 vim.api.nvim_create_user_command('McpStart', function()
   local mcp = require('mcp')
   if not mcp._state.setup_done then
-    vim.notify('[mcp] setup() has not been called', vim.log.levels.ERROR)
+    mcp.log.error('setup() has not been called')
     return
   end
   local port = mcp._start_http()
-  vim.notify(string.format('[mcp] HTTP server listening on port %d', port), vim.log.levels.INFO)
+  mcp.log.info('HTTP server listening on port', port)
 end, { desc = 'Start the mcp.nvim HTTP server' })
 
 vim.api.nvim_create_user_command('McpStop', function()
-  require('mcp').stop()
-  vim.notify('[mcp] HTTP server stopped', vim.log.levels.INFO)
+  local mcp = require('mcp')
+  mcp.stop()
+  mcp.log.info('HTTP server stopped')
 end, { desc = 'Stop the mcp.nvim HTTP server' })
 
 vim.api.nvim_create_user_command('McpRestart', function()
-  require('mcp').restart()
-  vim.notify('[mcp] HTTP server restarted', vim.log.levels.INFO)
+  local mcp = require('mcp')
+  mcp.restart()
+  mcp.log.info('HTTP server restarted')
 end, { desc = 'Restart the mcp.nvim HTTP server' })
 
 vim.api.nvim_create_user_command('McpPort', function()

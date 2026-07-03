@@ -1,5 +1,10 @@
 local M = {}
 
+---@type vim.Log
+local log = vim.log.new({ name = 'mcp' })
+vim.log.set_level(log, vim.log.levels.INFO)
+M.log = log
+
 ---@class mcp.Opts
 ---@field tools? table[]   DEPRECATED: list of mcp.ToolDef to register at setup time. Prefer `register()` after setup; kept for backward compatibility.
 ---@field http? { enabled?: boolean, host?: string, port?: integer, allowed_origins?: string[], endpoint?: string }
@@ -250,7 +255,7 @@ function M.attach_opencode(opts)
   if M._state.opencode_attached then return end
   local ok, oc_state = pcall(require, 'opencode.state')
   if not ok then
-    vim.notify('[mcp] opencode.nvim is not installed; skipping attach', vim.log.levels.INFO)
+    log.info('opencode.nvim is not installed; skipping attach')
     return
   end
 
@@ -262,17 +267,11 @@ function M.attach_opencode(opts)
     last_registered_directory = directory
     opencode_register(url, { name = opts.name, directory = directory }, function(result)
       if result.ok then
-        vim.notify(
-          string.format('[mcp] Registered with opencode at %s (workspace: %s)', url, directory),
-          vim.log.levels.INFO
-        )
+        log.info('Registered with opencode at', url, '(workspace:', directory, ')')
       else
-        vim.notify(
-          string.format(
-            '[mcp] Failed to register with opencode: %s',
-            result.error or ('status ' .. tostring(result.status))
-          ),
-          vim.log.levels.WARN
+        log.warn(
+          'Failed to register with opencode:',
+          result.error or ('status ' .. tostring(result.status))
         )
       end
     end)
@@ -348,16 +347,10 @@ function M.attach_opencode(opts)
   end
 
   if not (oc_state.store and oc_state.store.subscribe) then
-    vim.notify(
-      '[mcp] opencode.nvim is loaded but its state store is missing; attach_opencode is a no-op',
-      vim.log.levels.WARN
-    )
+    log.warn('opencode.nvim is loaded but its state store is missing; attach_opencode is a no-op')
     return
   end
-  vim.notify(
-    '[mcp] opencode.nvim EventManager not ready yet; deferring attach until it is',
-    vim.log.levels.INFO
-  )
+  log.info('opencode.nvim EventManager not ready yet; deferring attach until it is')
   oc_state.store.subscribe('event_manager', function(_, new_val)
     if M._state.opencode_attached then return end
     if not new_val then return end
