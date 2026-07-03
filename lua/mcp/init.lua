@@ -296,11 +296,16 @@ function M.attach_opencode(opts)
     end)
   end
 
-  local function wire(event_manager)
-    event_manager:subscribe('custom.server_ready', function(data)
-      last_server_url = data.url
-      do_register(data.url, oc_state.current_cwd or vim.fn.getcwd())
-    end)
+  local function wire(event_manager, known_url)
+    if known_url then
+      last_server_url = known_url
+      do_register(known_url, oc_state.current_cwd or vim.fn.getcwd())
+    else
+      event_manager:subscribe('custom.server_ready', function(data)
+        last_server_url = data.url
+        do_register(data.url, oc_state.current_cwd or vim.fn.getcwd())
+      end)
+    end
 
     oc_state.store.subscribe('current_cwd', function(_, new_val) schedule_re_register(new_val) end)
 
@@ -310,38 +315,10 @@ function M.attach_opencode(opts)
     )
   end
 
-  if oc_state.opencode_server and oc_state.opencode_server.url then
-    local last_server_url = oc_state.opencode_server.url
-    local directory = oc_state.current_cwd or vim.fn.getcwd()
-    do_register(last_server_url, directory)
-
-    local function attach_followups()
-      oc_state.store.subscribe(
-        'current_cwd',
-        function(_, new_val) schedule_re_register(new_val) end
-      )
-      oc_state.store.subscribe(
-        'active_session',
-        function(_, new_val) schedule_re_register(new_val and new_val.directory) end
-      )
-    end
-    if oc_state.event_manager then
-      oc_state.event_manager:subscribe('custom.server_ready', function(data) end)
-      attach_followups()
-    elseif oc_state.store and oc_state.store.subscribe then
-      oc_state.store.subscribe('event_manager', function(_, new_val)
-        if M._state.opencode_attached then return end
-        if not new_val then return end
-        new_val:subscribe('custom.server_ready', function(data) end)
-        attach_followups()
-      end)
-    end
-    M._state.opencode_attached = true
-    return
-  end
+  local known_url = oc_state.opencode_server and oc_state.opencode_server.url
 
   if oc_state.event_manager then
-    wire(oc_state.event_manager)
+    wire(oc_state.event_manager, known_url)
     M._state.opencode_attached = true
     return
   end
@@ -350,11 +327,12 @@ function M.attach_opencode(opts)
     log.warn('opencode.nvim is loaded but its state store is missing; attach_opencode is a no-op')
     return
   end
+
   log.info('opencode.nvim EventManager not ready yet; deferring attach until it is')
   oc_state.store.subscribe('event_manager', function(_, new_val)
     if M._state.opencode_attached then return end
     if not new_val then return end
-    wire(new_val)
+    wire(new_val, oc_state.opencode_server and oc_state.opencode_server.url)
     M._state.opencode_attached = true
   end)
 end
