@@ -280,4 +280,159 @@ describe('server', function()
     end)
     eq('table', type(out))
   end)
+
+  it('inflight: handler runs under a ctx and the inflight slot is cleared on finish', function()
+    local out = exec_lua(function()
+      local DispatchCtx = require('mcp.json_rpc.dispatch_ctx')
+      local server = require('mcp.server')
+      local registry = require('mcp.tool_registry').new()
+      local s = server.new({
+        on_request = function() end,
+        on_notify = function() end,
+        on_exit = function() end,
+        on_error = function() end,
+        is_closing = function() return false end,
+        notify = function() end,
+      }, registry)
+      s:_dispatch('initialize', { protocolVersion = '2025-03-26' })
+      s:_on_notify('notifications/initialized', nil)
+
+      local cancel_calls = 0
+      registry:register({
+        name = 'long',
+        description = 'long-running tool',
+        timeout_ms = 5000,
+        cancel = function() cancel_calls = cancel_calls + 1 end,
+        handler = function(_args, ctx)
+          local tracked = next(s._inflight) ~= nil
+          ctx:ok({ { type = 'text', text = 'done' } })
+          return nil, nil
+        end,
+      })
+
+      local transport = {
+        responses = {},
+        write_response = function(self, _, env) self.responses[#self.responses + 1] = env end,
+      }
+      local ctx = DispatchCtx.make_ctx({
+        request_id = 42,
+        tool_name = 'long',
+        transport = transport,
+        on_done = function() end,
+      })
+      s:_handle_tools_call({ name = 'long', arguments = {} }, ctx)
+      return {
+        inflight_after = next(s._inflight) ~= nil,
+        response_count = #transport.responses,
+        is_error = transport.responses[1] and transport.responses[1].isError,
+      }
+    end)
+    eq(false, out.inflight_after, 'inflight slot should be cleared after ctx:ok')
+    eq(1, out.response_count)
+    eq(false, out.is_error)
+  end)
+
+  it('cancel: notifications/cancelled invokes the tool cancel function', function()
+    local out = exec_lua(function()
+      local DispatchCtx = require('mcp.json_rpc.dispatch_ctx')
+      local server = require('mcp.server')
+      local registry = require('mcp.tool_registry').new()
+      local s = server.new({
+        on_request = function() end,
+        on_notify = function() end,
+        on_exit = function() end,
+        on_error = function() end,
+        is_closing = function() return false end,
+        notify = function() end,
+      }, registry)
+      s:_dispatch('initialize', { protocolVersion = '2025-03-26' })
+      s:_on_notify('notifications/initialized', nil)
+
+      registry:register({
+        name = 'cancellable',
+        description = 'cancellable tool',
+        cancel = function(reason, c)
+          c.cancel_log = c.cancel_log or {}
+          c.cancel_log[#c.cancel_log + 1] = { reason = reason, tool_name = c.tool_name }
+        end,
+        handler = function(_args, _ctx)
+          -- never finishes
+          return nil, nil
+        end,
+      })
+
+      local transport = {
+        responses = {},
+        write_response = function(self, _, env) self.responses[#self.responses + 1] = env end,
+      }
+      local ctx = DispatchCtx.make_ctx({
+        request_id = 99,
+        tool_name = 'cancellable',
+        transport = transport,
+        on_done = function() end,
+      })
+      s:_handle_tools_call({ name = 'cancellable', arguments = {} }, ctx)
+      s:_on_notify('notifications/cancelled', { requestId = 99, reason = 'user-pressed-esc' })
+      return {
+        cancel_log = ctx.cancel_log or {},
+        inflight_after = s._inflight[99] ~= nil,
+      }
+    end)
+    eq(1, #out.cancel_log)
+    eq('user-pressed-esc', out.cancel_log[1].reason)
+    eq('cancellable', out.cancel_log[1].tool_name)
+    eq(false, out.inflight_after, 'inflight slot should be removed after cancel')
+  end)
+
+  it('timeout: tool with timeout_ms fires cancel then ctx:err', function()
+    local out = exec_lua(function()
+      local DispatchCtx = require('mcp.json_rpc.dispatch_ctx')
+      local server = require('mcp.server')
+      local registry = require('mcp.tool_registry').new()
+      local s = server.new({
+        on_request = function() end,
+        on_notify = function() end,
+        on_exit = function() end,
+        on_error = function() end,
+        is_closing = function() return false end,
+        notify = function() end,
+      }, registry, { default_tool_timeout_ms = 1000 })
+      s:_dispatch('initialize', { protocolVersion = '2025-03-26' })
+      s:_on_notify('notifications/initialized', nil)
+
+      registry:register({
+        name = 'slow',
+        description = 'slow tool',
+        timeout_ms = 50,
+        cancel = function(reason, c)
+          c.cancel_log = c.cancel_log or {}
+          c.cancel_log[#c.cancel_log + 1] = reason
+        end,
+        handler = function(_args, _ctx)
+          -- never returns / never calls ctx:ok
+        end,
+      })
+
+      local transport = {
+        responses = {},
+        write_response = function(self, _, env) self.responses[#self.responses + 1] = env end,
+      }
+      local ctx = DispatchCtx.make_ctx({
+        request_id = 7,
+        tool_name = 'slow',
+        transport = transport,
+        on_done = function() end,
+      })
+      s:_handle_tools_call({ name = 'slow', arguments = {} }, ctx)
+      vim.wait(300, function() return #transport.responses > 0 end)
+      return {
+        response = transport.responses[1],
+        cancel_log = ctx.cancel_log or {},
+      }
+    end)
+    eq(true, out.response.isError)
+    eq(1, #out.cancel_log)
+    eq('tool timed out', out.cancel_log[1])
+    eq(true, out.response.content[1].text:find('timed out', 1, true) ~= nil)
+  end)
 end)

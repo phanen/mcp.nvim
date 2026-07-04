@@ -97,7 +97,7 @@ function M._start_http()
   local server, actual_port = http.bind(host, port, {
     endpoint = http_opts.endpoint,
     allowed_origins = http_opts.allowed_origins or { 'null' },
-    on_request = function(method, params) return mcp_server:_dispatch(method, params) end,
+    on_request = function(method, params, ctx) return mcp_server:_dispatch(method, params, ctx) end,
     on_notify = function(method, params) mcp_server:_on_notify(method, params) end,
     -- SSE liveness is the only session-end signal we have, lacking
     -- `Mcp-Session-Id`. A new client triggers a fresh `initialize`.

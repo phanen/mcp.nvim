@@ -3,8 +3,10 @@ local M = {}
 ---@class mcp.ToolDef
 ---@field name string
 ---@field description string
----@field inputSchema? table JSON Schema describing arguments
----@field handler fun(args: table): table?, string?  # returns content[], or nil, err
+---@field inputSchema? table
+---@field handler fun(args: table, ctx?: mcp.json_rpc.DispatchCtx): table?, string?  # returns content[], or nil, err
+---@field cancel? fun(reason: string?, ctx: mcp.json_rpc.DispatchCtx)
+---@field timeout_ms? integer
 ---@field annotations? table
 
 ---@class mcp.ToolRegistry

@@ -7,6 +7,12 @@
 ---@field _on_done? fun()
 ---@field _transport table
 ---@field _cancel_fn? fun(reason: string?, ctx: mcp.json_rpc.DispatchCtx)
+---@field _timeout_ms? integer
+---@field ok fun(self, content: table[])
+---@field err fun(self, message: string|table[])
+---@field progress fun(self, progress: integer, total?: integer, message?: string)
+---@field set_cancel fun(self, cancel_fn?: fun(reason: string?, ctx: mcp.json_rpc.DispatchCtx))
+---@field start_timeout fun(self, timeout_ms?: integer)
 
 local DispatchCtx = {}
 DispatchCtx.__index = DispatchCtx
@@ -54,6 +60,29 @@ function DispatchCtx:progress(progress, total, message)
   })
 end
 
+---@param cancel_fn? fun(reason: string?, ctx: mcp.json_rpc.DispatchCtx)
+function DispatchCtx:set_cancel(cancel_fn) self._cancel_fn = cancel_fn end
+
+---@param timeout_ms? integer
+function DispatchCtx:start_timeout(timeout_ms)
+  if self._timer and not self._timer:is_closing() then return end
+  if not timeout_ms or timeout_ms <= 0 then return end
+  self._timeout_ms = timeout_ms
+  local timer = assert(vim.uv.new_timer())
+  self._timer = timer
+  ---@type mcp.json_rpc.DispatchCtx
+  local ctx = self
+  timer:start(
+    timeout_ms,
+    0,
+    vim.schedule_wrap(function()
+      if ctx._done then return end
+      if ctx._cancel_fn then pcall(ctx._cancel_fn, 'tool timed out', ctx) end
+      ctx:err(string.format('tool "%s" timed out after %dms', ctx.tool_name, timeout_ms))
+    end)
+  )
+end
+
 ---@param opts {
 ---  request_id: integer|string,
 ---  progress_token?: any,
@@ -76,21 +105,7 @@ function M.make_ctx(opts)
     _cancel_fn = opts.cancel_fn,
   }, DispatchCtx)
 
-  local timeout_ms = opts.timeout_ms
-  if timeout_ms == nil then timeout_ms = M.DEFAULT_TOOL_TIMEOUT_MS end
-  if timeout_ms and timeout_ms > 0 then
-    local timer = assert(vim.uv.new_timer())
-    ctx._timer = timer
-    timer:start(
-      timeout_ms,
-      0,
-      vim.schedule_wrap(function()
-        if ctx._done then return end
-        if ctx._cancel_fn then pcall(ctx._cancel_fn, 'tool timed out', ctx) end
-        ctx:err(string.format('tool "%s" timed out after %dms', ctx.tool_name, timeout_ms))
-      end)
-    )
-  end
+  if opts.timeout_ms and opts.timeout_ms > 0 then ctx:start_timeout(opts.timeout_ms) end
 
   return ctx
 end
