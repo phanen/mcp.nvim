@@ -18,8 +18,6 @@ function M.post_json(url, body, opts, on_done)
   local args = {
     'curl',
     '-sS',
-    '--max-time',
-    tostring(math.max(1, math.ceil(timeout_ms / 1000))),
     '-X',
     'POST',
     '-H',
@@ -37,21 +35,19 @@ function M.post_json(url, body, opts, on_done)
   table.insert(args, url)
 
   local done = false
-  local timer = assert(vim.uv.new_timer())
-  local obj --[[@type vim.SystemObj?]]
 
   local function finish(result, err)
     if done then return end
     done = true
-    if not timer:is_closing() then
-      timer:stop()
-      timer:close()
-    end
     vim.schedule(function() on_done(result, err) end)
   end
 
   local function on_exit(completed)
     if done then return end
+    if completed.code == 124 then
+      finish(nil, 'request timed out after ' .. tostring(timeout_ms) .. 'ms')
+      return
+    end
     local stdout = completed.stdout or ''
     local status = stdout:match('(%d+)%s*$')
     if not status then
@@ -69,17 +65,11 @@ function M.post_json(url, body, opts, on_done)
     finish({ status = tonumber(status), body = resp_body }, nil)
   end
 
-  timer:start(timeout_ms, 0, function()
-    if obj and not obj:is_closing() then obj:kill('sigterm') end
-    finish(nil, 'request timed out after ' .. tostring(timeout_ms) .. 'ms')
-  end)
-
-  local ok, sysobj_or_err = pcall(vim.system, args, { text = true }, vim.schedule_wrap(on_exit))
-  if not ok then
-    finish(nil, 'failed to spawn curl: ' .. tostring(sysobj_or_err))
-    return
-  end
-  obj = sysobj_or_err --[[@as vim.SystemObj]]
+  local ok, sysobj_or_err = pcall(vim.system, args, {
+    text = true,
+    timeout = timeout_ms,
+  }, vim.schedule_wrap(on_exit))
+  if not ok then finish(nil, 'failed to spawn curl: ' .. tostring(sysobj_or_err)) end
 end
 
 return M
