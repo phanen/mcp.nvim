@@ -1,11 +1,12 @@
 local framing = require('mcp.json_rpc.transport.framing')
+local DispatchCtx = require('mcp.json_rpc.dispatch_ctx')
 
 local M = {}
 
 ---@class mcp.json_rpc.transport.http.BindOpts
 ---@field endpoint? string
 ---@field allowed_origins? string[]
----@field on_request? fun(method: string, params?: table): any?, mcp.json_rpc.Error?
+---@field on_request? fun(method: string, params?: table, ctx?: mcp.json_rpc.DispatchCtx): any?, mcp.json_rpc.Error?
 ---@field on_notify? fun(method: string, params?: table)
 ---@field on_sse_closed? fun()
 
@@ -90,7 +91,7 @@ end
 ---@field private port integer
 ---@field private endpoint string
 ---@field private allowed_origins table<string, true>
----@field on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
+---@field on_request fun(method: string, params?: table, ctx?: mcp.json_rpc.DispatchCtx): any?, mcp.json_rpc.Error?
 ---@field on_notify fun(method: string, params?: table)
 ---@field on_sse_closed? fun()
 ---@field private clients table<userdata, true>
@@ -305,15 +306,53 @@ function HttpServer:_on_data(client, data)
     return
   end
 
+  -- For `tools/call` we hand the handler a DispatchCtx so it can finish
+  -- asynchronously (via ctx:ok/ctx:err). Other methods stay synchronous.
+  local ctx
+  if msg.method == 'tools/call' and has_id then
+    local params = msg.params or {}
+    ctx = DispatchCtx.make_ctx({
+      request_id = msg.id,
+      progress_token = params._meta and params._meta.progressToken or nil,
+      tool_name = params.name or msg.method,
+      transport = {
+        write_response = function(_, _, envelope)
+          local body = vim.json.encode({
+            jsonrpc = '2.0',
+            id = msg.id,
+            result = envelope,
+          })
+          client:write(format_response(200, 'OK', body, {
+            ['Content-Type'] = 'application/json',
+          }))
+          client:shutdown()
+          client:close()
+          self.clients[client] = nil
+        end,
+        send_notification = function(_, method, params_)
+          local payload = vim.json.encode({ jsonrpc = '2.0', method = method, params = params_ })
+          self:broadcast_event(payload)
+        end,
+      },
+      on_done = function() end,
+    })
+  end
+
   -- xpcall collapses multi-return; we need both result and err, so
   -- capture them in an upvalue array. Index 1 is reserved for the
   -- error string.
   local results = { nil, nil, nil }
   ok = xpcall(function()
-    local r1, r2 = self.on_request(msg.method, msg.params)
+    local r1, r2 = self.on_request(msg.method, msg.params, ctx)
     results[2] = r1
     results[3] = r2
   end, function(err) results[1] = err end)
+
+  -- If the handler already finished via ctx:ok / ctx:err while we were
+  -- dispatching, its write_response closed the client itself. Skip the
+  -- synchronous response path entirely.
+  if ctx and ctx._done then return end
+
   local response_body
   if not ok then
     response_body = vim.json.encode({

@@ -396,4 +396,218 @@ describe('http_transport', function()
       'expected 403, got: ' .. tostring(resp.body):sub(1, 200)
     )
   end)
+
+  it(
+    'synchronous tools/call: handler returns a result envelope, response body carries it',
+    function()
+      -- This is the regression path: when on_request returns synchronously,
+      -- transport must still serialize the envelope correctly (the same code
+      -- path that produced every prior transport test).
+      local resp = http_request(
+        '127.0.0.1',
+        exec_lua(function()
+          local http = require('mcp.json_rpc.transport.http')
+          local srv
+          srv, _ = http.bind('127.0.0.1', 0, {
+            endpoint = '/mcp',
+            allowed_origins = { 'null' },
+          })
+          srv.on_request = function(_, params)
+            local args = params and params.arguments or {}
+            return {
+              content = { { type = 'text', text = 'sync-ok:' .. (args.tag or '') } },
+              isError = false,
+            },
+              nil
+          end
+          return srv.port
+        end),
+        'POST',
+        '/mcp',
+        '{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"x","arguments":{"tag":"hi"}}}',
+        {
+          ['Content-Type'] = 'application/json',
+          ['Accept'] = 'application/json',
+          ['Origin'] = 'null',
+        }
+      )
+
+      eq(true, resp.ok, 'connection error: ' .. tostring(resp.error))
+      eq(true, resp.body:match('HTTP/1.1 200') ~= nil, 'expected 200')
+      local _, json_start = resp.body:find('\r\n\r\n', 1, true)
+      local json_body = json_start and resp.body:sub(json_start + 1) or resp.body
+      eq(
+        true,
+        json_body:find('"id":42', 1, true) ~= nil,
+        'response id should be 42; json=' .. json_body
+      )
+      eq(true, json_body:find('"isError":false', 1, true) ~= nil, 'json=' .. json_body)
+      eq(true, json_body:find('sync-ok:hi', 1, true) ~= nil, 'json=' .. json_body)
+    end
+  )
+
+  it('async tools/call via ctx:ok: handler defers to ctx, response carries the envelope', function()
+    -- on_request itself is the async finish signal: it builds a ctx
+    -- implicitly via the transport's make_ctx, then hands it to the
+    -- handler. We probe ctx by ignoring the synchronous return path
+    -- and asserting that ctx:ok wrote the right envelope.
+    local resp = http_request(
+      '127.0.0.1',
+      exec_lua(function()
+        local http = require('mcp.json_rpc.transport.http')
+        local srv
+        srv, _ = http.bind('127.0.0.1', 0, {
+          endpoint = '/mcp',
+          allowed_origins = { 'null' },
+        })
+        srv.on_request = function(_, _params, ctx) ctx:ok({ { type = 'text', text = 'async-ok' } }) end
+        return srv.port
+      end),
+      'POST',
+      '/mcp',
+      '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"x"}}',
+      {
+        ['Content-Type'] = 'application/json',
+        ['Accept'] = 'application/json',
+        ['Origin'] = 'null',
+      }
+    )
+
+    eq(true, resp.ok, 'connection error: ' .. tostring(resp.error))
+    eq(true, resp.body:match('HTTP/1.1 200') ~= nil, 'expected 200')
+    local _, json_start = resp.body:find('\r\n\r\n', 1, true)
+    local json_body = json_start and resp.body:sub(json_start + 1) or resp.body
+    eq(true, json_body:find('"id":7', 1, true) ~= nil, 'json=' .. json_body)
+    eq(true, json_body:find('"isError":false', 1, true) ~= nil)
+    eq(true, json_body:find('async-ok', 1, true) ~= nil)
+  end)
+
+  it('async tools/call via ctx:err: response body carries isError=true', function()
+    local resp = http_request(
+      '127.0.0.1',
+      exec_lua(function()
+        local http = require('mcp.json_rpc.transport.http')
+        local srv
+        srv, _ = http.bind('127.0.0.1', 0, {
+          endpoint = '/mcp',
+          allowed_origins = { 'null' },
+        })
+        srv.on_request = function(_, _params, ctx) ctx:err('boom-async') end
+        return srv.port
+      end),
+      'POST',
+      '/mcp',
+      '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"x"}}',
+      {
+        ['Content-Type'] = 'application/json',
+        ['Accept'] = 'application/json',
+        ['Origin'] = 'null',
+      }
+    )
+
+    eq(true, resp.ok, 'connection error: ' .. tostring(resp.error))
+    eq(true, resp.body:match('HTTP/1.1 200') ~= nil, 'expected 200')
+    local _, json_start = resp.body:find('\r\n\r\n', 1, true)
+    local json_body = json_start and resp.body:sub(json_start + 1) or resp.body
+    eq(true, json_body:find('"id":9', 1, true) ~= nil, 'json=' .. json_body)
+    eq(true, json_body:find('"isError":true', 1, true) ~= nil, 'expected isError=true')
+    eq(true, json_body:find('boom-async', 1, true) ~= nil)
+  end)
+
+  it('async ctx:progress: notifications/progress is broadcast to a parallel SSE stream', function()
+    -- Open an SSE stream first, then issue a tools/call whose handler
+    -- calls ctx:progress. The server must broadcast the progress notice
+    -- even though the request-response cycle is a separate HTTP POST.
+    local out = exec_lua(function()
+      local http = require('mcp.json_rpc.transport.http')
+      local framing = require('mcp.json_rpc.transport.framing')
+      local uv = vim.uv or vim.loop
+      local srv, port = http.bind('127.0.0.1', 0, {
+        endpoint = '/mcp',
+        allowed_origins = { 'null' },
+      })
+
+      local sse_client = uv.new_tcp()
+      local sse_chunks = {}
+      sse_client:connect('127.0.0.1', port, function(err)
+        if err then return end
+        sse_client:read_start(function(_, data)
+          if data then table.insert(sse_chunks, data) end
+        end)
+        sse_client:write(
+          'GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n'
+            .. 'Accept: text/event-stream\r\nOrigin: null\r\n'
+            .. 'Connection: keep-alive\r\n\r\n'
+        )
+      end)
+
+      vim.wait(500, function()
+        for _ in pairs(srv.streams) do
+          return true
+        end
+        return false
+      end)
+
+      srv.on_request = function(_, _params, ctx)
+        vim.defer_fn(function() ctx:progress(50, 100, 'halfway') end, 10)
+      end
+
+      -- Issue the tools/call in a separate client. We only care about the
+      -- broadcast hitting the SSE stream, so we don't read the response.
+      local post_client = uv.new_tcp()
+      post_client:connect('127.0.0.1', port, function(err)
+        if err then return end
+        post_client:write(
+          'POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n'
+            .. 'Content-Length: 96\r\nContent-Type: application/json\r\n'
+            .. 'Accept: application/json\r\nOrigin: null\r\n\r\n'
+            .. '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","_meta":{"progressToken":1}}}'
+        )
+      end)
+
+      local done = vim.wait(
+        2000,
+        function() return table.concat(sse_chunks):find('notifications/progress', 1, true) ~= nil end
+      )
+
+      local sse_body = table.concat(sse_chunks)
+      local _, hdr_end = sse_body:find('\r\n\r\n', 1, true)
+      local sse_payload = hdr_end and sse_body:sub(hdr_end + 1) or sse_body
+
+      local function first_data_event(body)
+        local cur = body
+        while #cur > 0 do
+          local data, consumed = framing.sse_decode({ cur }, #cur)
+          if not data then break end
+          cur = cur:sub((consumed or 0) + 1)
+          if data ~= '' then return data end
+        end
+        return nil
+      end
+
+      local decoded = first_data_event(sse_payload)
+
+      sse_client:close()
+      post_client:close()
+      srv:terminate()
+
+      return {
+        wait_done = done,
+        saw_progress = sse_body:find('notifications/progress', 1, true) ~= nil,
+        decoded = decoded,
+      }
+    end)
+
+    eq(true, out.wait_done, 'progress notification did not land on SSE within 2s')
+    eq(true, out.saw_progress)
+    eq('string', type(out.decoded))
+    eq(
+      true,
+      out.decoded:find('"progressToken":1', 1, true) ~= nil,
+      'progressToken should echo the request id'
+    )
+    eq(true, out.decoded:find('"progress":50', 1, true) ~= nil)
+    eq(true, out.decoded:find('"total":100', 1, true) ~= nil)
+    eq(true, out.decoded:find('halfway', 1, true) ~= nil)
+  end)
 end)

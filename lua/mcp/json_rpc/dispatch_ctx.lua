@@ -2,6 +2,11 @@
 ---@field request_id integer|string
 ---@field progress_token? any
 ---@field tool_name string
+---@field _done boolean
+---@field _timer userdata?
+---@field _on_done? fun()
+---@field _transport table
+---@field _cancel_fn? fun(reason: string?, ctx: mcp.json_rpc.DispatchCtx)
 
 local DispatchCtx = {}
 DispatchCtx.__index = DispatchCtx

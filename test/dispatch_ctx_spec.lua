@@ -11,9 +11,7 @@ local eq = h.eq
 describe('dispatch_ctx', function()
   before_each(function() h.setup() end)
 
-  local function sandbox(body)
-    return h.in_sandbox('\n' .. body)
-  end
+  local function sandbox(body) return h.in_sandbox('\n' .. body) end
 
   it('ok: writes a successful envelope exactly once', function()
     local r = sandbox([[
@@ -232,13 +230,16 @@ describe('dispatch_ctx', function()
     eq(0, r)
   end)
 
-  it('timeout_ms omitted: uses DEFAULT_TOOL_TIMEOUT_MS but does not fire in the test window', function()
-    local r = sandbox([[
+  it(
+    'timeout_ms omitted: uses DEFAULT_TOOL_TIMEOUT_MS but does not fire in the test window',
+    function()
+      local r = sandbox([[
       local dc = require('mcp.json_rpc.dispatch_ctx')
       return dc.DEFAULT_TOOL_TIMEOUT_MS
     ]])
-    eq(30000, r)
-  end)
+      eq(30000, r)
+    end
+  )
 
   it('missing cancel_fn: timeout still produces a ctx:err', function()
     local r = sandbox([[
