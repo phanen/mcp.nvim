@@ -17,14 +17,18 @@ return {
     },
     required = { 'path', 'line', 'character' },
   },
-  handler = function(args)
+  handler = function(args, ctx)
     local buf, uri = shared.ensure_buffer(args.path)
     local results, errors = shared.buf_request_sync(buf, 'textDocument/references', {
       textDocument = { uri = uri },
       position = { line = args.line, character = args.character },
       context = { includeDeclaration = args.include_declaration ~= false },
     }, 2000)
-    if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
+    if #errors > 0 and #results == 0 then
+      local __r = table.concat(errors, '; ')
+      if ctx then ctx:err(__r) end
+      return nil, __r
+    end
     local count = 0
     for _, r in ipairs(results) do
       for _, _ in ipairs(r) do
@@ -37,6 +41,8 @@ return {
         table.insert(lines, shared.format_location(loc))
       end
     end
-    return shared.text(table.concat(lines, '\n'))
+    local __r = shared.text(table.concat(lines, '\n'))
+    if ctx then ctx:ok(__r) end
+    return __r
   end,
 }

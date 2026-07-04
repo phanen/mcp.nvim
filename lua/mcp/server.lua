@@ -204,7 +204,8 @@ function Server:_handle_tools_call(params, ctx)
     return {
       content = { { type = 'text', text = tostring(content_or_err) } },
       isError = true,
-    }, nil
+    },
+      nil
   end
 
   -- No ctx: caller (older transport) takes the synchronous envelope

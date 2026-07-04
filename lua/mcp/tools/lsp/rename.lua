@@ -20,14 +20,18 @@ return {
     },
     required = { 'path', 'line', 'character', 'new_name' },
   },
-  handler = function(args)
+  handler = function(args, ctx)
     local buf, uri = shared.ensure_buffer(args.path)
     local results, errors = shared.buf_request_sync(buf, 'textDocument/rename', {
       textDocument = { uri = uri },
       position = { line = args.line, character = args.character },
       newName = args.new_name,
     }, 2000)
-    if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
+    if #errors > 0 and #results == 0 then
+      local __r = table.concat(errors, '; ')
+      if ctx then ctx:err(__r) end
+      return nil, __r
+    end
 
     local edit = nil
     for _, r in ipairs(results) do
@@ -73,6 +77,8 @@ return {
         )
       end
     end
-    return shared.text(table.concat(lines, '\n'))
+    local __r = shared.text(table.concat(lines, '\n'))
+    if ctx then ctx:ok(__r) end
+    return __r
   end,
 }

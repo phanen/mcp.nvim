@@ -18,10 +18,12 @@ return {
       },
     },
   },
-  handler = function(args)
+  handler = function(args, ctx)
     args = args or {}
     if not (vim.diagnostic and vim.diagnostic.severity) then
-      return shared.text('vim.diagnostic is not available in this Neovim build.')
+      local __r = shared.text('vim.diagnostic is not available in this Neovim build.')
+      if ctx then ctx:ok(__r) end
+      return __r
     end
     local sev = vim.diagnostic.severity
     local name_to_sev = {
@@ -36,7 +38,10 @@ return {
     local bufnr
     if args.path and args.path ~= '' then
       local ok, b = pcall(shared.ensure_buffer, args.path)
-      if not ok then return nil, b end
+      if not ok then
+        if ctx then ctx:err(b) end
+        return nil, b
+      end
       bufnr = b
     end
 
@@ -52,7 +57,9 @@ return {
     end
 
     if not items or #items == 0 then
-      return shared.text(string.format('No diagnostics at severity <= %s.', min_sev_name))
+      local __r = shared.text(string.format('No diagnostics at severity <= %s.', min_sev_name))
+      if ctx then ctx:ok(__r) end
+      return __r
     end
 
     table.sort(items, function(a, b)
@@ -67,6 +74,8 @@ return {
     for _, d in ipairs(items) do
       table.insert(lines, shared.format_diagnostic(d))
     end
-    return shared.text(table.concat(lines, '\n'))
+    local __r = shared.text(table.concat(lines, '\n'))
+    if ctx then ctx:ok(__r) end
+    return __r
   end,
 }

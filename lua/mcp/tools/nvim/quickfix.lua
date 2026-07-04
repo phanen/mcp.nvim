@@ -4,7 +4,7 @@ return {
   name = 'nvim_quickfix',
   description = 'Get the current quickfix list as a list of `path:line:col: text` lines (grep-like). Includes the list title for context. Returns a clean message if the list is empty.',
   inputSchema = { type = 'object' },
-  handler = function(_)
+  handler = function(_, ctx)
     local qf = vim.fn.getqflist({ items = 0, title = 0 })
     local title = qf.title
     local items = qf.items or {}
@@ -12,7 +12,11 @@ return {
     local title_str = ''
     if title and title ~= '' then title_str = string.format(' (title: %s)', title) end
 
-    if #items == 0 then return shared.text('Quickfix list is empty' .. title_str .. '.') end
+    if #items == 0 then
+      local __r = shared.text('Quickfix list is empty' .. title_str .. '.')
+      if ctx then ctx:ok(__r) end
+      return __r
+    end
 
     local lines = {
       string.format('Quickfix list: %d entries%s', #items, title_str),
@@ -29,6 +33,8 @@ return {
       local type_ = (item.type and item.type ~= '') and (item.type .. ': ') or ''
       table.insert(lines, string.format('%4d %s:%d:%d: %s%s', i, fname, lnum, col, type_, text_))
     end
-    return shared.text(table.concat(lines, '\n'))
+    local __r = shared.text(table.concat(lines, '\n'))
+    if ctx then ctx:ok(__r) end
+    return __r
   end,
 }

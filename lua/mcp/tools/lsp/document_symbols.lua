@@ -14,20 +14,30 @@ return {
     },
     required = { 'path' },
   },
-  handler = function(args)
+  handler = function(args, ctx)
     local buf = vim.fn.bufadd(vim.fn.fnamemodify(args.path, ':p'))
     vim.fn.bufload(buf)
     local results, errors = shared.buf_request_sync(buf, 'textDocument/documentSymbol', {
       textDocument = { uri = vim.uri_from_bufnr(buf) },
     }, 2000)
-    if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
+    if #errors > 0 and #results == 0 then
+      local __r = table.concat(errors, '; ')
+      if ctx then ctx:err(__r) end
+      return nil, __r
+    end
     local lines = {}
     for _, r in ipairs(results) do
       for _, sym in ipairs(r) do
         table.insert(lines, shared.format_symbol(sym))
       end
     end
-    if #lines == 0 then return shared.text('No symbols found.') end
-    return shared.text(table.concat(lines, '\n'))
+    if #lines == 0 then
+      local __r = shared.text('No symbols found.')
+      if ctx then ctx:ok(__r) end
+      return __r
+    end
+    local __r = shared.text(table.concat(lines, '\n'))
+    if ctx then ctx:ok(__r) end
+    return __r
   end,
 }
