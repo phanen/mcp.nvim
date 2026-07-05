@@ -35,7 +35,7 @@ local function with_files(files, body)
       string.format("local f = io.open(%q, 'w'); f:write('-- scratch\\n'); f:close()", full)
     )
   end
-  return h.in_sandbox(table.concat(writes, '\n') .. '\n' .. body)
+  return exec_lua(table.concat(writes, '\n') .. '\n' .. body)
 end
 
 --- Cleanup helper: remove every file we created in this test. Safe to
@@ -57,7 +57,7 @@ describe('nvim tools', function()
   end)
 
   it('registers all expected tool names', function()
-    local out = h.in_sandbox([[
+    local out = exec_lua([[
       local registry = require('mcp.tool_registry').new()
       registry:register(require('mcp.tools.nvim.diagnostics'))
       registry:register(require('mcp.tools.nvim.quickfix'))
@@ -71,7 +71,7 @@ describe('nvim tools', function()
   end)
 
   it('register_nvim_diagnostics alone registers only that tool', function()
-    local out = h.in_sandbox([[
+    local out = exec_lua([[
       local registry = require('mcp.tool_registry').new()
       registry:register(require('mcp.tools.nvim.diagnostics'))
       local names = {}
@@ -83,7 +83,7 @@ describe('nvim tools', function()
   end)
 
   it('register_nvim_quickfix alone registers only that tool', function()
-    local out = h.in_sandbox([[
+    local out = exec_lua([[
       local registry = require('mcp.tool_registry').new()
       registry:register(require('mcp.tools.nvim.quickfix'))
       local names = {}

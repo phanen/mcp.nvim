@@ -19,7 +19,7 @@
 --     end)
 --
 --     it('does the thing', function()
---       local out = h.in_sandbox([[ return require('mcp.foo').bar() ]])
+--       local out = h.exec_lua(function() return require('mcp.foo').bar() end)
 --       h.eq('bar', out)
 --     end)
 --   end)
@@ -54,19 +54,6 @@ function M.setup(extra)
     end
   )
   if extra ~= nil then exec_lua(extra) end
-end
-
---- Run a Lua source string inside the sandbox with the repo's `lua/`
---- tree prepended to `package.path`. Convenience for the common case of
---- a one-shot `exec_lua` that needs to `require` mcp modules.
-function M.in_sandbox(body)
-  return exec_lua([[
-    package.path = vim.fn.fnamemodify('./lua/?.lua;', ':p')
-      .. ';'
-      .. vim.fn.fnamemodify('./lua/?/init.lua;', ':p')
-      .. ';'
-      .. package.path
-  ]] .. body)
 end
 
 return M
