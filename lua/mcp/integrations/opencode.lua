@@ -1,7 +1,8 @@
 local M = {}
 
-local log = vim.log.new({ name = 'mcp.opencode' })
-vim.log.set_level(log, vim.log.levels.INFO)
+local log_util = require('mcp.util.log')
+local log = log_util.new({ name = 'mcp.opencode' })
+log_util.set_level(log, log_util.levels.INFO)
 
 local attached = false
 
