@@ -348,10 +348,17 @@ function HttpServer:_on_data(client, data)
     results[3] = r2
   end, function(err) results[1] = err end)
 
-  -- If the handler already finished via ctx:ok / ctx:err while we were
-  -- dispatching, its write_response closed the client itself. Skip the
-  -- synchronous response path entirely.
-  if ctx and ctx._done then return end
+  -- When a ctx is attached AND the handler returned no synchronous value
+  -- (results[2] / results[3] are nil), the ctx owns the response: the
+  -- handler (or its async callback / timeout / cancel) will eventually
+  -- call ctx:ok / ctx:err, which writes the real envelope via
+  -- write_response and closes the client. Writing a `null` envelope
+  -- here would race the ctx's write and either close the client too
+  -- early or leak a misleading `result: null` to the caller.
+  --
+  -- In every other case (no ctx, ctx._done, or a non-nil sync return)
+  -- we fall through to the synchronous envelope path.
+  if ctx and not results[2] and not results[3] then return end
 
   local response_body
   if not ok then

@@ -247,6 +247,7 @@ end
 ---@return table? envelope
 ---@return mcp.json_rpc.Error?
 function Server:_build_envelope(content_or_err)
+  local _ = self
   if content_or_err == nil then
     return {
       content = { { type = 'text', text = 'unknown error' } },

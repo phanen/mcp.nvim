@@ -27,8 +27,6 @@ return {
       }, function(results)
         if ctx._done then return end
         local parts = {}
-        if ctx._done then return end
-        local parts = {}
         for _, r in ipairs(results) do
           local contents = r and r.result and r.result.contents
           if contents then

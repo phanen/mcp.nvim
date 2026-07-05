@@ -20,6 +20,9 @@ local function has_set_level()
   return type(vim.log) == 'table' and type(vim.log.set_level) == 'function'
 end
 
+---@class mcp.Log : vim.Log
+
+---@return mcp.Log
 local function make_legacy_logger(name)
   local label = {
     [M.levels.TRACE] = 'TRACE',
@@ -42,11 +45,14 @@ local function make_legacy_logger(name)
   }
 end
 
----@param opts? { name?: string, current_level?: integer }
----@return table
+---@param opts? vim.log.new.Opts|{}
+---@return mcp.Log
 function M.new(opts)
   opts = opts or {}
-  if has_real_log() then return vim.log.new(opts) end
+  if has_real_log() then
+    ---@diagnostic disable-next-line: param-type-mismatch
+    return vim.log.new(opts)
+  end
   return make_legacy_logger(opts.name or 'mcp')
 end
 
