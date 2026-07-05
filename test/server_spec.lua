@@ -351,13 +351,17 @@ describe('server', function()
       registry:register({
         name = 'cancellable',
         description = 'cancellable tool',
+        timeout_ms = 60000,
         cancel = function(reason, c)
           c.cancel_log = c.cancel_log or {}
           c.cancel_log[#c.cancel_log + 1] = { reason = reason, tool_name = c.tool_name }
+          c:err('cancelled by client')
         end,
         handler = function(_args, _ctx)
-          -- never finishes
-          return nil, nil
+          vim.defer_fn(function()
+            if ctx._done then return end
+            ctx:ok({ { type = 'text', text = 'finished naturally' } })
+          end, 60 * 60 * 1000)
         end,
       })
 
@@ -409,7 +413,10 @@ describe('server', function()
           c.cancel_log[#c.cancel_log + 1] = reason
         end,
         handler = function(_args, _ctx)
-          -- never returns / never calls ctx:ok
+          vim.defer_fn(function()
+            if ctx._done then return end
+            ctx:ok({ { type = 'text', text = 'finished naturally' } })
+          end, 60 * 60 * 1000)
         end,
       })
 

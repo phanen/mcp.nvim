@@ -209,8 +209,7 @@ function Server:_handle_tools_call(params, ctx)
   end
 
   -- No ctx: caller (older transport) takes the synchronous envelope
-  -- and serialises it itself. ctx:ok / ctx:err path stays a no-op when
-  -- the handler finished via the ctx itself.
+  -- and serialises it itself.
   if not ctx then return self:_build_envelope(content_or_err) end
   if ctx._done then return nil end
 

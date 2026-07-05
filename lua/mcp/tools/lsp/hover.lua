@@ -13,20 +13,20 @@ return {
     required = { 'path', 'line', 'character' },
   },
   timeout_ms = 5000,
-  cancel = function(reason, ctx)
-    -- LSP has no cancel RPC; subsequent buf_request_all callbacks are
-    -- suppressed by the server's ctx:done check below.
+  cancel = function(_reason, ctx)
+    -- buf_request_all returns a cancel function; stash it on ctx so
+    -- this hook can abort the pending LSP request.
+    if ctx and ctx._lsp_cancel then ctx._lsp_cancel() end
   end,
   handler = function(args, ctx)
     local buf, uri = shared.ensure_buffer(args.path)
     if ctx then
-      -- Async path: fire the request, build content in the callback,
-      -- finish via ctx. The shared.buf_request_all callback runs on the
-      -- main loop, so it sees ctx._done if cancel / timeout already fired.
-      vim.lsp.buf_request_all(buf, 'textDocument/hover', {
+      local cancel = vim.lsp.buf_request_all(buf, 'textDocument/hover', {
         textDocument = { uri = uri },
         position = { line = args.line, character = args.character },
       }, function(results)
+        if ctx._done then return end
+        local parts = {}
         if ctx._done then return end
         local parts = {}
         for _, r in ipairs(results) do
@@ -55,6 +55,7 @@ return {
           ctx:ok(shared.text(table.concat(parts, '\n\n')))
         end
       end)
+      ctx._lsp_cancel = cancel
       return
     end
 
@@ -63,9 +64,7 @@ return {
       textDocument = { uri = uri },
       position = { line = args.line, character = args.character },
     }, 2000)
-    if #errors > 0 and #results == 0 then
-      return nil, table.concat(errors, '; ')
-    end
+    if #errors > 0 and #results == 0 then return nil, table.concat(errors, '; ') end
     local parts = {}
     for _, r in ipairs(results) do
       local contents = r.contents
