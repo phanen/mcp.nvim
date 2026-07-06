@@ -43,40 +43,6 @@ for k, v in pairs(error_code) do
   M.error_code[v] = k
 end
 
----@class mcp.json_rpc.log
----@field info fun(msg: string, ctx?: table)
----@field debug fun(msg: string, ctx?: table)
----@field warn fun(msg: string, ctx?: table)
----@field error fun(msg: string, ctx?: table)
-local default_log = {}
-function default_log.debug() end
-function default_log.warn() end
-function default_log.error() end
-
-local function make_log()
-  local enabled = vim.env.MCP_DEBUG and vim.env.MCP_DEBUG ~= ''
-  return setmetatable({
-    enabled = enabled,
-    log = require('vim.lsp.log'),
-    info = function(self, msg, ctx)
-      if not self.enabled then return end
-      self.log.info(msg, ctx)
-    end,
-    warn = function(self, msg, ctx)
-      if not self.enabled then return end
-      self.log.warn(msg, ctx)
-    end,
-    error = function(self, msg, ctx)
-      if not self.enabled then return end
-      self.log.error(msg, ctx)
-    end,
-    debug = function(self, msg, ctx)
-      if not self.enabled then return end
-      self.log.debug(msg, ctx)
-    end,
-  }, { __index = default_log })
-end
-
 ---@class mcp.json_rpc.Error
 ---@field code integer
 ---@field message string
@@ -133,7 +99,7 @@ end
 ---@field private transport mcp.json_rpc.Transport
 ---@field private message_stream mcp.json_rpc.message_stream
 ---@field private dispatchers mcp.json_rpc.Dispatchers
----@field private log mcp.json_rpc.log
+---@field private log vim.Log
 ---@field public on_request fun(method: string, params?: table): any?, mcp.json_rpc.Error?
 ---@field public on_notify fun(method: string, params?: table)
 ---@field public on_exit fun(code: integer, signal: integer)
@@ -144,7 +110,7 @@ Connection.__index = Connection
 
 ---@param transport mcp.json_rpc.Transport
 ---@param dispatchers mcp.json_rpc.Dispatchers
----@param log mcp.json_rpc.log
+---@param log vim.Log
 ---@param decode fun(strbuf: string[], byte_len: integer): string?, integer?
 ---@param encode fun(msg: string): string
 ---@return mcp.json_rpc.Connection
@@ -277,7 +243,7 @@ end
 ---@field dispatchers mcp.json_rpc.Dispatchers
 ---@field decode fun(strbuf: string[], byte_len: integer): string?, integer?
 ---@field encode fun(msg: string): string
----@field log? mcp.json_rpc.log
+---@field log? vim.Log
 
 ---@param transport mcp.json_rpc.Transport
 ---@param opts mcp.json_rpc.Opts
@@ -288,7 +254,7 @@ function M.wrap(transport, opts)
   validate('opts.decode', opts.decode, 'function')
   validate('opts.encode', opts.encode, 'function')
 
-  local log = opts.log or make_log()
+  local log = opts.log or require('mcp.util.log').log
   local dispatchers = merge_dispatchers(opts.dispatchers)
   return Connection.new(transport, dispatchers, log, opts.decode, opts.encode)
 end

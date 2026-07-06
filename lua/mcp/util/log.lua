@@ -62,4 +62,10 @@ function M.set_level(log, level)
   if has_set_level() then return vim.log.set_level(log, level) end
 end
 
+---Shared logger for the whole plugin. Callers should `require('mcp.util.log').log`
+---instead of instantiating their own namespaces.
+---@type mcp.Log
+M.log = M.new({ name = 'mcp' })
+M.set_level(M.log, M.levels.INFO)
+
 return M

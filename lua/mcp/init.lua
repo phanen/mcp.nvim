@@ -1,9 +1,5 @@
 local M = {}
-
-local log_util = require('mcp.util.log')
----@type vim.Log
-local log = log_util.new({ name = 'mcp' })
-log_util.set_level(log, log_util.levels.INFO)
+local log = require('mcp.util.log').log
 M.log = log
 
 ---@class mcp.Opts

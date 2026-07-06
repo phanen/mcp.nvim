@@ -1,8 +1,6 @@
 local M = {}
 
-local log_util = require('mcp.util.log')
-local log = log_util.new({ name = 'mcp.opencode' })
-log_util.set_level(log, log_util.levels.INFO)
+local log = require('mcp.util.log').log
 
 local attached = false
 
