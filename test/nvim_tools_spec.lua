@@ -163,10 +163,10 @@ describe('nvim tools', function()
         vim.fn.bufload(buf)
         local ns = vim.api.nvim_create_namespace('nvim_tools_spec')
         vim.diagnostic.set(ns, buf, {
-          { bufnr = buf, lnum = 0, severity = sev.ERROR, message = 'e' },
-          { bufnr = buf, lnum = 1, severity = sev.WARN,  message = 'w' },
-          { bufnr = buf, lnum = 2, severity = sev.INFO,  message = 'i' },
-          { bufnr = buf, lnum = 3, severity = sev.HINT,  message = 'h' },
+          { bufnr = buf, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR, message = 'e' },
+          { bufnr = buf, lnum = 1, col = 0, end_col = 0, severity = sev.WARN,  message = 'w' },
+          { bufnr = buf, lnum = 2, col = 0, end_col = 0, severity = sev.INFO,  message = 'i' },
+          { bufnr = buf, lnum = 3, col = 0, end_col = 0, severity = sev.HINT,  message = 'h' },
         })
       ]])
       local out = exec_lua([[
@@ -186,10 +186,10 @@ describe('nvim tools', function()
         local ba = vim.fn.bufadd(']] .. TMPDIR .. [[/nvim_diag_a.txt'); vim.fn.bufload(ba)
         local bb = vim.fn.bufadd(']] .. TMPDIR .. [[/nvim_diag_b.txt'); vim.fn.bufload(bb)
         vim.diagnostic.set(ns, ba, {
-          { bufnr = ba, lnum = 0, severity = sev.ERROR, message = 'a-only' },
+          { bufnr = ba, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR, message = 'a-only' },
         })
         vim.diagnostic.set(ns, bb, {
-          { bufnr = bb, lnum = 0, severity = sev.ERROR, message = 'b-only' },
+          { bufnr = bb, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR, message = 'b-only' },
         })
       ]])
       local out = exec_lua([[
@@ -233,10 +233,10 @@ describe('nvim tools', function()
         vim.fn.bufload(buf)
         local ns = vim.api.nvim_create_namespace('nvim_tools_spec')
         vim.diagnostic.set(ns, buf, {
-          { bufnr = buf, lnum = 0, severity = sev.ERROR, message = 'the-error' },
-          { bufnr = buf, lnum = 1, severity = sev.WARN,  message = 'the-warn' },
-          { bufnr = buf, lnum = 2, severity = sev.INFO,  message = 'the-info' },
-          { bufnr = buf, lnum = 3, severity = sev.HINT,  message = 'the-hint' },
+          { bufnr = buf, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR, message = 'the-error' },
+          { bufnr = buf, lnum = 1, col = 0, end_col = 0, severity = sev.WARN,  message = 'the-warn' },
+          { bufnr = buf, lnum = 2, col = 0, end_col = 0, severity = sev.INFO,  message = 'the-info' },
+          { bufnr = buf, lnum = 3, col = 0, end_col = 0, severity = sev.HINT,  message = 'the-hint' },
         })
       ]])
       local out = exec_lua([[
@@ -257,8 +257,8 @@ describe('nvim tools', function()
         vim.fn.bufload(buf)
         local ns = vim.api.nvim_create_namespace('nvim_tools_spec')
         vim.diagnostic.set(ns, buf, {
-          { bufnr = buf, lnum = 0, severity = sev.ERROR, message = 'e' },
-          { bufnr = buf, lnum = 1, severity = sev.WARN,  message = 'w' },
+          { bufnr = buf, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR, message = 'e' },
+          { bufnr = buf, lnum = 1, col = 0, end_col = 0, severity = sev.WARN,  message = 'w' },
         })
       ]])
       local out = exec_lua([[
@@ -280,7 +280,7 @@ describe('nvim tools', function()
         vim.fn.bufload(buf)
         local ns = vim.api.nvim_create_namespace('nvim_tools_spec')
         vim.diagnostic.set(ns, buf, {
-          { bufnr = buf, lnum = 0, severity = sev.ERROR,
+          { bufnr = buf, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR,
             message = 'line one\nline two\nline three' },
         })
       ]])
@@ -327,7 +327,7 @@ describe('nvim tools', function()
         local ns = vim.api.nvim_create_namespace('nvim_tools_spec')
         local function seed(name, msg, src, code)
           local b = vim.fn.bufadd(']] .. TMPDIR .. [[/' .. name); vim.fn.bufload(b)
-          local row = { bufnr = b, lnum = 0, severity = sev.ERROR, message = msg }
+          local row = { bufnr = b, lnum = 0, col = 0, end_col = 0, severity = sev.ERROR, message = msg }
           if src ~= nil then row.source = src end
           if code ~= nil then row.code = code end
           vim.diagnostic.set(ns, b, { row })
